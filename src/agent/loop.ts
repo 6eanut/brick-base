@@ -55,12 +55,66 @@ export interface AgentTurnResult {
   toolsCalled: boolean;
 }
 
+// ─── Event system for progress visualization ──────────────────────────────
+
+export type AgentEventType =
+  | 'turn_start'
+  | 'llm_request'
+  | 'llm_response'
+  | 'tool_call'
+  | 'tool_result'
+  | 'turn_end'
+  | 'final_response'
+  | 'error'
+  ;
+
+export interface AgentEventPayloads {
+  turn_start: { turn: number };
+  llm_request: { turn: number };
+  llm_response: { turn: number; content?: string; toolCount: number };
+  tool_call: { turn: number; name: string; args: Record<string, unknown> };
+  tool_result: { turn: number; name: string; success: boolean; output: string; error?: string; durationMs: number };
+  turn_end: { turn: number; toolCalls: number };
+  final_response: { response: string; turns: number; totalTokens: number };
+  error: { message: string };
+}
+
+export type AgentEventHandler<E extends AgentEventType = AgentEventType> = (data: AgentEventPayloads[E]) => void;
+
+/** Maximum agent loop turns before giving up */
+export const MAX_AGENT_TURNS = 20;
+
 export class AgentLoop {
   private provider: LLMProvider;
   private toolRegistry: ToolRegistry;
   private conversation: ConversationManager;
   private contextManager: ContextManager;
   private config: AgentConfig;
+  private eventHandlers: Map<AgentEventType, AgentEventHandler[]> = new Map();
+
+  /**
+   * Subscribe to agent execution events.
+   */
+  on<E extends AgentEventType>(event: E, handler: AgentEventHandler<E>): void {
+    const handlers = this.eventHandlers.get(event);
+    if (handlers) {
+      handlers.push(handler as AgentEventHandler);
+    } else {
+      this.eventHandlers.set(event, [handler as AgentEventHandler]);
+    }
+  }
+
+  /**
+   * Emit an event to all subscribers.
+   */
+  private emit<E extends AgentEventType>(event: E, data: AgentEventPayloads[E]): void {
+    const handlers = this.eventHandlers.get(event);
+    if (handlers) {
+      for (const handler of handlers) {
+        (handler as AgentEventHandler<E>)(data);
+      }
+    }
+  }
 
   constructor(
     provider: LLMProvider,
@@ -93,19 +147,39 @@ export class AgentLoop {
     let finalResponse = '';
 
     // Multi-turn loop: LLM may request multiple tool calls
-    while (turns < 20) {
-      // Limit to 20 tool rounds
+    while (turns < MAX_AGENT_TURNS) {
+      turns++;
+
+      // Emit turn start
+      this.emit('turn_start', { turn: turns });
+
       const messages = this.prepareMessages();
       const toolDefs = this.prepareToolDefs();
 
-      const response = await this.provider.chat(messages, {
-        model: this.config.model,
-        tools: toolDefs,
-        temperature: this.config.temperature,
-      });
+      // Emit LLM request
+      this.emit('llm_request', { turn: turns });
 
-      turns++;
+      let response: import('../llm/provider.js').LLMResponse;
+      try {
+        response = await this.provider.chat(messages, {
+          model: this.config.model,
+          tools: toolDefs,
+          temperature: this.config.temperature,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.emit('error', { message });
+        throw err; // Re-throw so caller can handle
+      }
+
       totalTokens += response.usage.totalTokens;
+
+      // Emit LLM response
+      this.emit('llm_response', {
+        turn: turns,
+        content: response.content ?? undefined,
+        toolCount: response.toolCalls.length,
+      });
 
       // Check for tool calls
       if (response.toolCalls.length > 0) {
@@ -126,7 +200,27 @@ export class AgentLoop {
             continue;
           }
 
+          // Emit tool call before execution
+          this.emit('tool_call', {
+            turn: turns,
+            name: tc.function.name,
+            args,
+          });
+
+          const startTime = Date.now();
           const result = await this.toolRegistry.execute(tc.function.name, args);
+          const durationMs = Date.now() - startTime;
+
+          // Emit tool result after execution
+          this.emit('tool_result', {
+            turn: turns,
+            name: tc.function.name,
+            success: result.success,
+            output: result.output,
+            error: result.error,
+            durationMs,
+          });
+
           this.conversation.addToolMessage(tc.id, tc.function.name, this.formatToolResult(result));
         }
 
@@ -135,14 +229,26 @@ export class AgentLoop {
           this.conversation.addAssistantMessage(response.content);
         }
 
+        // Emit turn end
+        this.emit('turn_end', { turn: turns, toolCalls: response.toolCalls.length });
+
         // Continue loop for next LLM response with tool results
         continue;
       }
 
       // No tool calls — final response
-      finalResponse = response.content;
+      finalResponse = response.content ?? '';
       this.conversation.addAssistantMessage(finalResponse);
+
+      // Emit final response
+      this.emit('final_response', { response: finalResponse, turns, totalTokens });
       break;
+    }
+
+    // Turn limit reached without producing final response
+    if (turns >= MAX_AGENT_TURNS && finalResponse === '') {
+      finalResponse = `⚠️  Agent reached the maximum of ${MAX_AGENT_TURNS} turns without producing a final response. Try simplifying your request or breaking it into smaller steps.`;
+      this.emit('final_response', { response: finalResponse, turns, totalTokens });
     }
 
     return {

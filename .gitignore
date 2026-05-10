@@ -5,3 +5,10 @@ dist/
 .DS_Store
 brick.sh
 .env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

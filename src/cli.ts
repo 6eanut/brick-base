@@ -26,6 +26,7 @@ import { AgentLoop, AgentMode } from './agent/loop.js';
 import { CommandRegistry } from './commands/registry.js';
 import { ExtensionRegistry } from './extensions/registry.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
+import { ProgressRenderer } from './tui/progress.js';
 
 // ─── CLI setup ──────────────────────────────────────────────────────────────
 
@@ -178,6 +179,16 @@ async function main(): Promise<void> {
     },
   });
 
+  // ─── Progress Visualization ──────────────────────────────────────────
+  const progress = new ProgressRenderer();
+  agent.on('llm_request', (data) => progress.showThinking(data));
+  agent.on('llm_response', (data) => progress.showLLMResponse(data));
+  agent.on('tool_call', (data) => progress.showToolCall(data));
+  agent.on('tool_result', (data) => progress.showToolResult(data));
+  agent.on('turn_end', (data) => progress.showTurnEnd(data));
+  agent.on('final_response', () => progress.finish());
+  agent.on('error', (data) => progress.showError(data));
+
   // ─── Commands ────────────────────────────────────────────────────────
   const cmdRegistry = new CommandRegistry();
   let shouldExit = false;
@@ -256,6 +267,7 @@ async function main(): Promise<void> {
         console.log(`  (${result.turns} turn(s), ${result.totalTokens} tokens)`);
       }
     } catch (err) {
+      progress.finish();
       console.log(`Error: ${err instanceof Error ? err.message : String(err)}`);
     }
 
