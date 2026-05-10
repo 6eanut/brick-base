@@ -19,6 +19,7 @@ import chalk from 'chalk';
 import { ConfigManager } from './config/config.js';
 import { LLMProvider, type Provider } from './llm/provider.js';
 import { AnthropicProvider } from './llm/anthropic.js';
+import { detectProvider, isAnthropicProvider } from './llm/detect.js';
 import { ToolRegistry } from './tools/registry.js';
 import { FileTool, setAllowedRoots, setBlockedPaths } from './tools/file.js';
 import { createShellTool } from './tools/shell.js';
@@ -119,9 +120,22 @@ async function main(): Promise<void> {
   config.loadFromEnv();
 
   // ─── LLM Provider ───────────────────────────────────────────────────
-  const providerName = opts.provider || config.get('defaultProvider');
+  const providedProvider = opts.provider || config.get('defaultProvider');
+  const modelFromOpts = opts.model ?? undefined;
+
+  // Auto-detect provider if not explicitly set
+  const detectedProvider = providedProvider && providedProvider !== 'auto'
+    ? providedProvider
+    : detectProvider({
+        apiKey: opts.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.BRICK_API_KEY ?? undefined,
+        model: modelFromOpts,
+        baseUrl: opts.baseUrl ?? undefined,
+        explicit: providedProvider === 'auto' ? undefined : providedProvider,
+      }) ?? 'openai';
+
+  const providerName = detectedProvider;
   const providerCfg = config.getProviderConfig(providerName);
-  const provider: Provider = providerName === 'anthropic'
+  const provider: Provider = isAnthropicProvider(providerName)
     ? new AnthropicProvider({
         name: providerName,
         apiKey: opts.apiKey ?? providerCfg.apiKey,
