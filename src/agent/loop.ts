@@ -14,6 +14,24 @@ import { ToolRegistry } from '../tools/registry.js';
 import { ConversationManager } from './conversation.js';
 import { ContextManager } from './context.js';
 
+/** Default timeout per tool execution (2 minutes) */
+const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
+
+/**
+ * Race a promise against a timeout.
+ * Resolves to the promise's value if it completes in time,
+ * otherwise rejects with a TimeoutError.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`Tool "${label}" timed out after ${ms}ms`));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 export const AgentMode = {
   BUILD: 'build',
   PLAN: 'plan',
@@ -26,6 +44,8 @@ export interface AgentConfig {
   mode: AgentMode;
   model?: string;
   temperature?: number;
+  /** Per-tool execution timeout in milliseconds (default: 120000) */
+  toolTimeoutMs?: number;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -243,9 +263,23 @@ export class AgentLoop {
                 return { idx: originalIdx, result: null, durationMs: 0, error: pt.error };
               }
               const startTime = Date.now();
-              const result = await this.toolRegistry.execute(pt.tc.function.name, pt.args);
-              const durationMs = Date.now() - startTime;
-              return { idx: originalIdx, result, durationMs, error: undefined };
+              try {
+                const result = await withTimeout(
+                  this.toolRegistry.execute(pt.tc.function.name, pt.args),
+                  this.config.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
+                  pt.tc.function.name,
+                );
+                const durationMs = Date.now() - startTime;
+                return { idx: originalIdx, result, durationMs, error: undefined };
+              } catch (err) {
+                const durationMs = Date.now() - startTime;
+                return {
+                  idx: originalIdx,
+                  result: null,
+                  durationMs,
+                  error: err instanceof Error ? err.message : String(err),
+                };
+              }
             }),
           );
 
