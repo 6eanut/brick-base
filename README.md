@@ -10,12 +10,18 @@ Everything else snaps in as an extension.
 ## Quick Start
 
 ```bash
-# Install globally
-npm install -g @brick/base
+# Install globally from GitHub
+npm install -g github:brick-codeagent/brick-base
+
+# Or clone and install locally
+git clone https://github.com/brick-codeagent/brick-base.git
+cd brick-base
+npm install && npm run build && npm link
 
 # Configuration
 export BRICK_API_KEY="your-api-key"
 export BRICK_PROVIDER="openai"
+export BRICK_MODEL="gpt-4"
 
 # Start coding
 brick
