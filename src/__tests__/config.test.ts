@@ -117,8 +117,45 @@ describe('ConfigManager', () => {
     expect(config.defaultModel).toBe('gpt-4');
   });
 
-  it('getProviderConfig should return empty object for unknown provider', () => {
-    const config = manager.getProviderConfig('nonexistent');
-    expect(config).toEqual({});
+  it('getAllProviders should return all provider configs', () => {
+    const all = manager.getAllProviders();
+    expect(all).toHaveProperty('deepseek');
+    expect(all).toHaveProperty('ollama');
+  });
+
+  it('getProviderConfig should handle nested provider-specific env vars', () => {
+    vi.stubEnv('BRICK_API_KEY', 'brick-key');
+    vi.stubEnv('BRICK_PROVIDER', 'deepseek');
+    vi.stubEnv('BRICK_BASE_URL', 'https://custom.deepseek.com');
+    vi.stubEnv('BRICK_MODEL', 'deepseek-chat');
+
+    manager.loadFromEnv();
+
+    expect(manager.get('defaultProvider')).toBe('deepseek');
+    const config = manager.getProviderConfig('deepseek');
+    expect(config.apiKey).toBe('brick-key');
+    expect(config.baseUrl).toBe('https://custom.deepseek.com');
+    expect(config.defaultModel).toBe('deepseek-chat');
+  });
+
+  it('loadFromEnv should handle BRICK_SHELL_BLOCK_NETWORK', () => {
+    vi.stubEnv('BRICK_SHELL_BLOCK_NETWORK', 'true');
+    manager.loadFromEnv();
+    expect(manager.get('shell').blockNetwork).toBe(true);
+  });
+
+  it('loadFromEnv should handle provider-specific API keys', () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-custom');
+    manager.loadFromEnv();
+    const config = manager.getProviderConfig('openai');
+    expect(config.apiKey).toBe('sk-ant-custom');
+  });
+
+  it('loadFromEnv should handle DEEPSEEK_API_KEY', () => {
+    vi.stubEnv('DEEPSEEK_API_KEY', 'deepseek-custom-key');
+    vi.stubEnv('BRICK_PROVIDER', 'deepseek');
+    manager.loadFromEnv();
+    const config = manager.getProviderConfig('deepseek');
+    expect(config.apiKey).toBe('deepseek-custom-key');
   });
 });

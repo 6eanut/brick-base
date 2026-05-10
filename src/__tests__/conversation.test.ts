@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ConversationManager } from '../agent/conversation.js';
 
 describe('ConversationManager', () => {
@@ -82,5 +82,67 @@ describe('ConversationManager', () => {
     const messages = manager.getMessages();
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('Second prompt.');
+  });
+
+  it('should add user message with images', () => {
+    manager.addUserMessage('What is in this image?', [
+      { data: 'base64data', mediaType: 'image/png' },
+    ]);
+    const messages = manager.getMessages();
+    expect(messages).toHaveLength(1);
+    expect(messages[0].role).toBe('user');
+    expect(messages[0].images).toBeDefined();
+    expect(messages[0].images).toHaveLength(1);
+    expect(messages[0].images![0].mediaType).toBe('image/png');
+  });
+
+  it('should filter system messages with getNonSystemMessages', () => {
+    manager.setSystemPrompt('System prompt.');
+    manager.addUserMessage('Hello');
+    const nonSystem = manager.getNonSystemMessages();
+    expect(nonSystem).toHaveLength(1);
+    expect(nonSystem[0].role).toBe('user');
+  });
+
+  it('should create a new conversation and switch to it', () => {
+    const first = manager.getActive();
+    const second = manager.create();
+    expect(second.id).not.toBe(first.id);
+    expect(manager.getActive().id).toBe(second.id);
+  });
+
+  it('should switch to existing conversation', () => {
+    const first = manager.getActive();
+    const second = manager.create();
+    const switched = manager.switchTo(first.id);
+    expect(switched?.id).toBe(first.id);
+    expect(manager.getActive().id).toBe(first.id);
+  });
+
+  it('should return undefined when switching to unknown id', () => {
+    const result = manager.switchTo('nonexistent');
+    expect(result).toBeUndefined();
+  });
+
+  it('should list all conversations', () => {
+    const first = manager.getActive();
+    manager.create();
+    const all = manager.listAll();
+    expect(all).toHaveLength(2);
+    expect(all.map(c => c.id)).toContain(first.id);
+  });
+
+  it('should persist a conversation without throwing', async () => {
+    const persistManager = new ConversationManager(true);
+    persistManager.addUserMessage('Hello');
+    persistManager.addAssistantMessage('Hi there!');
+    // Should not throw
+    await expect(persistManager.persist()).resolves.toBeUndefined();
+  });
+
+  it('should not persist when disabled', async () => {
+    const noPersistManager = new ConversationManager(false);
+    noPersistManager.addUserMessage('No persist');
+    expect(noPersistManager.getMessages()).toHaveLength(1);
   });
 });

@@ -108,7 +108,98 @@ export function createGitTools(options?: GitToolOptions): Tool[] {
     },
   };
 
-  return [statusTool, diffTool, logTool, commitTool];
+  const branchTool: Tool = {
+    name: 'git_branch',
+    description: 'List, create, or delete branches.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          description: 'Action: "list" (default), "create", or "delete"',
+          enum: ['list', 'create', 'delete'],
+        },
+        name: { type: 'string', description: 'Branch name (required for create/delete)' },
+      },
+    },
+    readOnly: true,
+    execute: async (args) => {
+      const action = (args.action as string) ?? 'list';
+      switch (action) {
+        case 'create':
+          if (!args.name) return { success: false, output: '', error: 'Branch name is required.' };
+          return safeRunGit(['branch', args.name as string]);
+        case 'delete':
+          if (!args.name) return { success: false, output: '', error: 'Branch name is required.' };
+          return safeRunGit(['branch', '-d', args.name as string]);
+        default:
+          return safeRunGit(['branch']);
+      }
+    },
+  };
+
+  const checkoutTool: Tool = {
+    name: 'git_checkout',
+    description: 'Switch to an existing branch.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: { type: 'string', description: 'Branch to switch to' },
+      },
+      required: ['branch'],
+    },
+    execute: async (args) => {
+      if (!args.branch) return { success: false, output: '', error: 'Branch name is required.' };
+      return safeRunGit(['checkout', args.branch as string]);
+    },
+  };
+
+  const mergeTool: Tool = {
+    name: 'git_merge',
+    description: 'Merge a branch into the current branch.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        branch: { type: 'string', description: 'Branch to merge into current branch' },
+        message: { type: 'string', description: 'Custom commit message for the merge' },
+        squash: { type: 'boolean', description: 'Squash all commits into one' },
+      },
+      required: ['branch'],
+    },
+    execute: async (args) => {
+      if (!args.branch) return { success: false, output: '', error: 'Branch name is required.' };
+      const cmd = ['merge'];
+      if (args.squash) cmd.push('--squash');
+      if (args.message) {
+        const msg = (args.message as string).replace(/'/g, "'\\''");
+        cmd.push('-m', msg);
+      }
+      cmd.push(args.branch as string);
+      return safeRunGit(cmd);
+    },
+  };
+
+  const rebaseTool: Tool = {
+    name: 'git_rebase',
+    description: 'Rebase current branch onto another branch.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        onto: { type: 'string', description: 'Branch to rebase onto' },
+        interactive: { type: 'boolean', description: 'Use interactive rebase' },
+      },
+      required: ['onto'],
+    },
+    execute: async (args) => {
+      if (!args.onto) return { success: false, output: '', error: 'Target branch is required.' };
+      const cmd = ['rebase'];
+      if (args.interactive) cmd.push('--interactive');
+      cmd.push(args.onto as string);
+      return safeRunGit(cmd);
+    },
+  };
+
+  return [statusTool, diffTool, logTool, commitTool, branchTool, checkoutTool, mergeTool, rebaseTool];
 }
 
 export const GitTool = {

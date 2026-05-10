@@ -11,6 +11,8 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
+import type { MessageImage } from '../llm/provider.js';
+
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 export interface Message {
@@ -18,6 +20,7 @@ export interface Message {
   content: string;
   toolCallId?: string;
   toolName?: string;
+  images?: MessageImage[];
 }
 
 export interface Conversation {
@@ -97,9 +100,9 @@ export class ConversationManager {
   /**
    * Add a user message.
    */
-  addUserMessage(content: string): void {
+  addUserMessage(content: string, images?: MessageImage[]): void {
     const conv = this.getActive();
-    conv.messages.push({ role: 'user', content });
+    conv.messages.push({ role: 'user', content, images });
     conv.updatedAt = new Date().toISOString();
   }
 

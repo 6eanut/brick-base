@@ -87,7 +87,7 @@ export function createShellTool(config?: Partial<ShellConfig>): Tool {
       const dangerousPatterns = [
         /rm\s+-rf\s+\/\s*$/m,  // rm -rf /
         />\s*\/dev\/(null|zero)/, // Writing to special devices
-        /:\s*\(\)\s*\{[^}]*:\s*\(\)\s*\;?\s*\};?\s*:/, // Fork bomb
+        /:\s*\(\)\s*\{[^}]*:\s*\|/, // Fork bomb (:(){ :|:& };:)
         /brick\.json/,           // brick.json file operations
       ];
       for (const pattern of dangerousPatterns) {

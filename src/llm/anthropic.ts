@@ -43,6 +43,15 @@ interface AnthropicContentBlockToolUse {
   input: Record<string, unknown>;
 }
 
+interface AnthropicContentBlockImage {
+  type: 'image';
+  source: {
+    type: 'base64';
+    media_type: string;
+    data: string;
+  };
+}
+
 interface AnthropicContentBlockToolResult {
   type: 'tool_result';
   tool_use_id: string;
@@ -52,12 +61,14 @@ interface AnthropicContentBlockToolResult {
 type AnthropicContentBlock =
   | AnthropicContentBlockText
   | AnthropicContentBlockThinking
-  | AnthropicContentBlockToolUse;
+  | AnthropicContentBlockToolUse
+  | AnthropicContentBlockImage;
 
 /** Content blocks allowed inside user messages (includes tool_result). */
 type AnthropicUserContentBlock =
   | AnthropicContentBlockText
-  | AnthropicContentBlockToolResult;
+  | AnthropicContentBlockToolResult
+  | AnthropicContentBlockImage;
 
 type AnthropicMessageRole = 'user' | 'assistant';
 
@@ -184,7 +195,7 @@ export class AnthropicProvider implements Provider {
       };
     }
 
-    const isStreaming = !!options?.onToken;
+    const isStreaming = !!(options?.onToken || options?.onThinkingToken);
     if (isStreaming) {
       body.stream = true;
     }
@@ -249,7 +260,28 @@ export class AnthropicProvider implements Provider {
       const msg = nonSystemMessages[i];
 
       if (msg.role === 'user') {
-        anthropicMessages.push({ role: 'user', content: msg.content });
+        // Handle vision/multimodal: when images are present, content becomes
+        // an array of text + image content blocks (Anthropic format).
+        // See: https://docs.anthropic.com/en/docs/build-with-claude/vision
+        if (msg.images && msg.images.length > 0) {
+          const blocks: AnthropicContentBlock[] = [];
+          if (msg.content) {
+            blocks.push({ type: 'text', text: msg.content });
+          }
+          for (const img of msg.images) {
+            blocks.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: img.mediaType,
+                data: img.data,
+              },
+            } as AnthropicContentBlock);
+          }
+          anthropicMessages.push({ role: 'user', content: blocks });
+        } else {
+          anthropicMessages.push({ role: 'user', content: msg.content });
+        }
         i++;
         continue;
       }

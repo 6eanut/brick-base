@@ -264,6 +264,39 @@ async function main(): Promise<void> {
     exit: () => { shouldExit = true; },
   });
 
+  // ─── Image command ────────────────────────────────────────────────
+  cmdRegistry.register({
+    name: 'image',
+    description: 'Attach an image file to the conversation',
+    usage: '<path>',
+    execute: async (args) => {
+      if (!args[0]) {
+        return 'Usage: /image <path-to-image>';
+      }
+      const imgPath = resolve(args[0]);
+      if (!existsSync(imgPath)) {
+        return `File not found: ${imgPath}`;
+      }
+      // Read file and detect MIME type from extension
+      const ext = imgPath.toLowerCase().split('.').pop() ?? '';
+      const mimeMap: Record<string, string> = {
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        webp: 'image/webp',
+        bmp: 'image/bmp',
+      };
+      const mediaType = mimeMap[ext];
+      if (!mediaType) {
+        return `Unsupported image format: .${ext}. Supported: png, jpg, jpeg, gif, webp, bmp`;
+      }
+      const data = await readFile(imgPath, { encoding: 'base64' });
+      agent.getConversation().addUserMessage('', [{ data, mediaType }]);
+      return `Image attached: ${imgPath} (${mediaType})`;
+    },
+  });
+
   // ─── Print banner ────────────────────────────────────────────────────
   console.log(chalk.bold('\n🧱 Brick — Modular AI Coding Agent v0.1.0'));
   console.log(chalk.gray(`  Provider: ${providerName}`));

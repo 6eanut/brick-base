@@ -49,11 +49,20 @@ export interface LLMResponse {
   thinking?: string;
 }
 
+export interface MessageImage {
+  /** Base64-encoded image data */
+  data: string;
+  /** MIME type, e.g. "image/jpeg", "image/png", "image/webp" */
+  mediaType: string;
+}
+
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
   toolCallId?: string;
   toolName?: string;
+  /** Optional image attachments (for vision-capable providers) */
+  images?: MessageImage[];
 }
 
 export interface LLMToolDefinition {
@@ -134,11 +143,37 @@ export class LLMProvider implements Provider {
     const model = options?.model ?? this.config.defaultModel ?? 'unknown';
     const body: Record<string, unknown> = {
       model,
-      messages: messages.map(m => ({
-        role: m.role,
-        content: m.content,
-        ...(m.toolCallId ? { tool_call_id: m.toolCallId } : {}),
-      })),
+      messages: messages.map(m => {
+        const msg: Record<string, unknown> = {
+          role: m.role,
+        };
+        if (m.toolCallId) {
+          msg.tool_call_id = m.toolCallId;
+        }
+
+        // Handle vision/multimodal: when images are present, content becomes
+        // an array of text + image_url parts (OpenAI format).
+        // See: https://platform.openai.com/docs/guides/vision
+        if (m.images && m.images.length > 0 && this.capabilities.vision) {
+          const content: Array<Record<string, unknown>> = [];
+          if (m.content) {
+            content.push({ type: 'text', text: m.content });
+          }
+          for (const img of m.images) {
+            content.push({
+              type: 'image_url',
+              image_url: {
+                url: `data:${img.mediaType};base64,${img.data}`,
+              },
+            });
+          }
+          msg.content = content;
+        } else {
+          msg.content = m.content;
+        }
+
+        return msg;
+      }),
       temperature: options?.temperature ?? 0.7,
       max_tokens: options?.maxTokens ?? this.capabilities.maxTokens,
     };

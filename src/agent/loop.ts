@@ -480,6 +480,7 @@ export class AgentLoop {
       content: m.content,
       toolCallId: m.toolCallId,
       toolName: m.toolName,
+      images: m.images,
     }));
   }
 

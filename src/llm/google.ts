@@ -27,6 +27,10 @@ import { parseSseStream } from './sse-parser.js';
 
 interface GeminiPart {
   text?: string;
+  inlineData?: {
+    mimeType: string;
+    data: string;
+  };
   functionCall?: {
     name: string;
     args: Record<string, unknown>;
@@ -217,7 +221,24 @@ export class GoogleProvider implements Provider {
           i++;
           continue;
         }
-        contents.push({ role: 'user', parts: [{ text: msg.content }] });
+        // Handle vision/multimodal: when images are present, parts include
+        // text + inlineData entries (Gemini format).
+        // See: https://ai.google.dev/gemini-api/docs/vision
+        const parts: GeminiPart[] = [];
+        if (msg.content) {
+          parts.push({ text: msg.content });
+        }
+        if (msg.images && msg.images.length > 0) {
+          for (const img of msg.images) {
+            parts.push({
+              inlineData: {
+                mimeType: img.mediaType,
+                data: img.data,
+              },
+            });
+          }
+        }
+        contents.push({ role: 'user', parts });
         i++;
         continue;
       }
@@ -244,6 +265,22 @@ export class GoogleProvider implements Provider {
           });
         }
         contents.push({ role: 'model', parts });
+
+        // Emit functionResponse parts for tool results
+        for (const tm of toolMessages) {
+          contents.push({
+            role: 'user',
+            parts: [
+              {
+                functionResponse: {
+                  name: tm.toolName ?? 'unknown',
+                  response: { output: tm.content },
+                },
+              },
+            ],
+          });
+        }
+
         i = j > i + 1 ? j : i + 1;
         continue;
       }
