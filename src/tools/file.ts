@@ -1,11 +1,87 @@
 /**
  * File operation tools — read, write, edit, grep, glob.
+ *
+ * All file operations are guarded by path security checks:
+ * - Symlink traversal protection via realpathSync
+ * - Blocked system paths (always enforced)
+ * - Configurable blocked paths (from config.file.blockedPaths)
+ * - Allowed root directories (cwd + config.file.allowedRoots)
  */
 
 import { readFile, writeFile, readdir, stat, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import { Tool, ToolResult } from './registry.js';
+
+let allowedRoots: string[] = [process.cwd()];
+let blockedPaths: string[] = [];
+
+export function setAllowedRoots(roots: string[]): void {
+  allowedRoots = [...roots];
+}
+
+export function getAllowedRoots(): string[] {
+  return [...allowedRoots];
+}
+
+export function setBlockedPaths(paths: string[]): void {
+  blockedPaths = [...paths];
+}
+
+export function getBlockedPaths(): string[] {
+  return [...blockedPaths];
+}
+
+function isPathAllowed(targetPath: string): boolean {
+  // Resolve symlinks first to prevent symlink traversal bypass
+  let resolved: string;
+  try {
+    resolved = realpathSync(targetPath);
+  } catch {
+    // If realpath fails (e.g., file doesn't exist yet), fall back to resolve
+    resolved = resolve(targetPath);
+  }
+
+  // Block access to sensitive system paths (always enforced)
+  const defaultBlockedPatterns = [
+    /^\/etc\//,
+    /^\/proc\//,
+    /^\/sys\//,
+    /^\/dev\//,
+    /^\/boot\//,
+    /^\/var\/log/,
+    /^\/run\//,
+    /\/\.ssh\//,
+    /\/\.aws\//,
+    /\/\.config\//,
+    /\/\.git\//,
+    /\/node_modules\//,
+  ];
+
+  for (const pattern of defaultBlockedPatterns) {
+    if (pattern.test(resolved)) {
+      return false;
+    }
+  }
+
+  // Block paths from config (config.file.blockedPaths)
+  for (const blockedPath of blockedPaths) {
+    const normalizedBlocked = resolve(blockedPath);
+    if (resolved === normalizedBlocked || resolved.startsWith(normalizedBlocked + sep)) {
+      return false;
+    }
+  }
+
+  // Check if path is within any allowed root
+  for (const root of allowedRoots) {
+    const normalizedRoot = resolve(root);
+    if (resolved === normalizedRoot || resolved.startsWith(normalizedRoot + sep)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 /**
  * Read a file with optional line range.
@@ -25,6 +101,9 @@ const readTool: Tool = {
   readOnly: true,
   execute: async (args) => {
     const filePath = resolve(args.path as string);
+    if (!isPathAllowed(filePath)) {
+      return { success: false, output: '', error: 'Path not allowed for security reasons.' };
+    }
     const content = await readFile(filePath, 'utf-8');
     const lines = content.split('\n');
     const offset = (args.offset as number) ?? 1;
@@ -55,6 +134,9 @@ const writeTool: Tool = {
   },
   execute: async (args) => {
     const filePath = resolve(args.path as string);
+    if (!isPathAllowed(filePath)) {
+      return { success: false, output: '', error: 'Path not allowed for security reasons.' };
+    }
     const dir = filePath.split(sep).slice(0, -1).join(sep);
     if (dir && !existsSync(dir)) {
       await mkdir(dir, { recursive: true });
@@ -83,6 +165,9 @@ const grepTool: Tool = {
   execute: async (args) => {
     const pattern = new RegExp(args.pattern as string);
     const searchPath = resolve((args.path as string) ?? '.');
+    if (!isPathAllowed(searchPath)) {
+      return { success: false, output: '', error: 'Path not allowed for security reasons.' };
+    }
     const maxResults = (args.maxResults as number) ?? 50;
     const results: string[] = [];
 
@@ -140,6 +225,9 @@ const globTool: Tool = {
   readOnly: true,
   execute: async (args) => {
     const dirPath = resolve(args.path as string);
+    if (!isPathAllowed(dirPath)) {
+      return { success: false, output: '', error: 'Path not allowed for security reasons.' };
+    }
     const recursive = args.recursive as boolean ?? false;
     const pattern = args.pattern as string | undefined;
     const results: string[] = [];
@@ -184,6 +272,9 @@ const statTool: Tool = {
   readOnly: true,
   execute: async (args) => {
     const filePath = resolve(args.path as string);
+    if (!isPathAllowed(filePath)) {
+      return { success: false, output: '', error: 'Path not allowed for security reasons.' };
+    }
     const s = await stat(filePath);
     return {
       success: true,

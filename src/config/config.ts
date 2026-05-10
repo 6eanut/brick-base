@@ -32,6 +32,20 @@ export interface BrickConfig {
     timeout: number;
     /** Maximum output size in bytes */
     maxOutputBytes: number;
+    /** Regex patterns for blocked commands */
+    blockedCommands: string[];
+    /** Allowed command prefixes (empty = allow all) */
+    allowedCommands: string[];
+    /** Whether to block network commands */
+    blockNetwork: boolean;
+  };
+
+  /** File tool security settings */
+  file: {
+    /** Additional directories allowed for file operations (cwd is always allowed) */
+    allowedRoots: string[];
+    /** Path patterns to always block */
+    blockedPaths: string[];
   };
 
   /** UI settings */
@@ -58,6 +72,22 @@ const DEFAULT_CONFIG: BrickConfig = {
     allowedDirectories: [],
     timeout: 30_000,
     maxOutputBytes: 1_048_576, // 1 MB
+    blockedCommands: [
+      'rm\\s+-rf\\s+/\\s*$',
+      'rm\\s+-rf\\s+~',
+      'rm\\s+-rf\\s+\\.',
+      'mkfs\\.\\w+',
+      'dd\\s+if=',
+      'sudo',
+      'su\\s+',
+      ':\\s*\\(\\s*\\)\\s*\\{',
+    ],
+    allowedCommands: [],
+    blockNetwork: false,
+  },
+  file: {
+    allowedRoots: [],
+    blockedPaths: ['/etc', '/proc', '/sys', '/dev', '/boot'],
   },
   ui: {
     theme: 'auto',
@@ -93,6 +123,7 @@ export class ConfigManager {
     const envProvider = process.env.BRICK_PROVIDER;
     const envBaseUrl = process.env.BRICK_BASE_URL;
     const envModel = process.env.BRICK_MODEL;
+    const envBlockNetwork = process.env.BRICK_SHELL_BLOCK_NETWORK;
 
     if (envProvider) {
       this.config.defaultProvider = envProvider;
@@ -107,6 +138,13 @@ export class ConfigManager {
         defaultModel: envModel ?? this.config.providers[providerName]?.defaultModel,
       };
     }
+
+    if (envBlockNetwork === 'true') {
+      this.config.shell = {
+        ...this.config.shell,
+        blockNetwork: true,
+      };
+    }
   }
 
   private mergeConfigs(base: BrickConfig, override: Partial<BrickConfig>): BrickConfig {
@@ -118,6 +156,7 @@ export class ConfigManager {
       extensionPaths: [...base.extensionPaths, ...(override.extensionPaths ?? [])],
       shell: { ...base.shell, ...(override.shell ?? {}) },
       ui: { ...base.ui, ...(override.ui ?? {}) },
+      file: { ...base.file, ...(override.file ?? {}) },
     };
   }
 }

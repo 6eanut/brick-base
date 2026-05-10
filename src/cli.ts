@@ -17,9 +17,10 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 
 import { ConfigManager } from './config/config.js';
-import { LLMProvider } from './llm/provider.js';
+import { LLMProvider, type Provider } from './llm/provider.js';
+import { AnthropicProvider } from './llm/anthropic.js';
 import { ToolRegistry } from './tools/registry.js';
-import { FileTool } from './tools/file.js';
+import { FileTool, setAllowedRoots, setBlockedPaths } from './tools/file.js';
 import { createShellTool } from './tools/shell.js';
 import { createGitTools } from './tools/git.js';
 import { AgentLoop, AgentMode } from './agent/loop.js';
@@ -120,14 +121,26 @@ async function main(): Promise<void> {
   // ─── LLM Provider ───────────────────────────────────────────────────
   const providerName = opts.provider || config.get('defaultProvider');
   const providerCfg = config.getProviderConfig(providerName);
-  const provider = new LLMProvider({
-    name: providerName,
-    apiKey: opts.apiKey ?? providerCfg.apiKey,
-    baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
-    defaultModel: opts.model ?? providerCfg.defaultModel ?? undefined,
-  });
+  const provider: Provider = providerName === 'anthropic'
+    ? new AnthropicProvider({
+        name: providerName,
+        apiKey: opts.apiKey ?? providerCfg.apiKey,
+        baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
+        defaultModel: opts.model ?? providerCfg.defaultModel ?? undefined,
+      })
+    : new LLMProvider({
+        name: providerName,
+        apiKey: opts.apiKey ?? providerCfg.apiKey,
+        baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
+        defaultModel: opts.model ?? providerCfg.defaultModel ?? undefined,
+      });
 
-  const hasApiKey = !!(providerCfg.apiKey || opts.apiKey || process.env.BRICK_API_KEY);
+  const hasApiKey = !!(
+    providerCfg.apiKey ||
+    opts.apiKey ||
+    process.env.BRICK_API_KEY ||
+    process.env.ANTHROPIC_API_KEY
+  );
 
   if (!hasApiKey) {
     console.log(chalk.yellow('\n⚠  No API key configured. Set BRICK_API_KEY or pass --api-key.'));
@@ -138,6 +151,13 @@ async function main(): Promise<void> {
   const toolRegistry = new ToolRegistry();
 
   FileTool.registerAll(toolRegistry);
+
+  setAllowedRoots([
+    process.cwd(),
+    ...(config.get('shell').allowedDirectories || []),
+    ...(config.get('file').allowedRoots || []),
+  ]);
+  setBlockedPaths(config.get('file').blockedPaths || []);
 
   const shellTool = createShellTool(config.get('shell'));
   toolRegistry.register(shellTool);
