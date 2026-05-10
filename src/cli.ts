@@ -19,6 +19,7 @@ import chalk from 'chalk';
 import { ConfigManager } from './config/config.js';
 import { LLMProvider, type Provider } from './llm/provider.js';
 import { AnthropicProvider } from './llm/anthropic.js';
+import { GoogleProvider } from './llm/google.js';
 import { detectProvider, isAnthropicProvider } from './llm/detect.js';
 import { ToolRegistry } from './tools/registry.js';
 import { FileTool, setAllowedRoots, setBlockedPaths } from './tools/file.js';
@@ -142,7 +143,14 @@ async function main(): Promise<void> {
         baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
         defaultModel: opts.model ?? providerCfg.defaultModel ?? undefined,
       })
-    : new LLMProvider({
+    : providerName === 'google'
+      ? new GoogleProvider({
+          name: providerName,
+          apiKey: opts.apiKey ?? providerCfg.apiKey,
+          baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
+          defaultModel: opts.model ?? providerCfg.defaultModel ?? undefined,
+        })
+      : new LLMProvider({
         name: providerName,
         apiKey: opts.apiKey ?? providerCfg.apiKey,
         baseUrl: opts.baseUrl ?? providerCfg.baseUrl,
