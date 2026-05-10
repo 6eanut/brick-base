@@ -128,4 +128,54 @@ describe('ToolRegistry', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('kaboom');
   });
+
+  describe('result size limits', () => {
+    it('applies default 256KB limit', async () => {
+      const registry = new ToolRegistry();
+      const bigOutput = 'x'.repeat(300_000);
+      registry.register(makeTool({
+        name: 'big',
+        execute: async () => ({ success: true, output: bigOutput }),
+      }));
+      const result = await registry.execute('big', {});
+      expect(result.success).toBe(true);
+      expect(result.output.length).toBeLessThan(270_000);
+      expect(result.output).toContain('[result truncated to');
+    });
+
+    it('allows custom maxResultBytes via constructor', async () => {
+      const registry = new ToolRegistry({ maxResultBytes: 100 });
+      const bigOutput = 'y'.repeat(500);
+      registry.register(makeTool({
+        name: 'big',
+        execute: async () => ({ success: true, output: bigOutput }),
+      }));
+      const result = await registry.execute('big', {});
+      expect(result.success).toBe(true);
+      expect(result.output.length).toBeLessThan(200);
+      expect(result.output).toContain('[result truncated to 100 bytes]');
+    });
+
+    it('does not truncate output under the limit', async () => {
+      const registry = new ToolRegistry({ maxResultBytes: 1000 });
+      registry.register(makeTool({
+        name: 'small',
+        execute: async () => ({ success: true, output: 'small output' }),
+      }));
+      const result = await registry.execute('small', {});
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('small output');
+    });
+
+    it('handles zero-length output gracefully', async () => {
+      const registry = new ToolRegistry({ maxResultBytes: 100 });
+      registry.register(makeTool({
+        name: 'empty',
+        execute: async () => ({ success: true, output: '' }),
+      }));
+      const result = await registry.execute('empty', {});
+      expect(result.success).toBe(true);
+      expect(result.output).toBe('');
+    });
+  });
 });

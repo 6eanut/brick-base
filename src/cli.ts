@@ -29,6 +29,7 @@ import { AgentLoop, AgentMode } from './agent/loop.js';
 import { CommandRegistry } from './commands/registry.js';
 import { ExtensionRegistry } from './extensions/registry.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
+import { ToolAnalytics } from './tools/analytics.js';
 import { ProgressRenderer } from './tui/progress.js';
 
 // ─── CLI setup ──────────────────────────────────────────────────────────────
@@ -58,57 +59,181 @@ program
 
 program
   .command('install <path>')
-  .description('Install an extension from a local path')
+  .description('Install an extension from a local path or npm package')
   .action(async (extPath: string) => {
-    const srcDir = resolve(extPath);
-    const manifestPath = join(srcDir, 'brick.json');
-
-    if (!existsSync(manifestPath)) {
-      console.log(chalk.red(`\n❌ No brick.json found at ${srcDir}\n`));
-      process.exit(1);
-    }
-
-    let manifest: { name: string };
-    try {
-      const content = await readFile(manifestPath, 'utf-8');
-      manifest = JSON.parse(content);
-    } catch {
-      console.log(chalk.red(`\n❌ Invalid brick.json at ${srcDir}\n`));
-      process.exit(1);
-    }
-
-    const extDir = join(homedir(), '.brick', 'extensions', manifest.name);
     const extParent = join(homedir(), '.brick', 'extensions');
-
-    console.log(chalk.cyan(`\n📦 Installing "${manifest.name}" extension...`));
 
     if (!existsSync(extParent)) {
       await mkdir(extParent, { recursive: true });
     }
 
-    if (existsSync(extDir)) {
-      console.log(chalk.yellow(`  ⚠  Extension "${manifest.name}" already exists, overwriting...`));
-      await rm(extDir, { recursive: true, force: true });
+    // Try local path first
+    const srcDir = resolve(extPath);
+    const localManifestPath = join(srcDir, 'brick.json');
+
+    if (existsSync(localManifestPath)) {
+      // ── Local path install ──────────────────────────────────────────
+      let manifest: { name: string };
+      try {
+        const content = await readFile(localManifestPath, 'utf-8');
+        manifest = JSON.parse(content);
+      } catch {
+        console.log(chalk.red(`\n❌ Invalid brick.json at ${srcDir}\n`));
+        process.exit(1);
+      }
+
+      const extDir = join(extParent, manifest.name);
+      console.log(chalk.cyan(`\n📦 Installing "${manifest.name}" extension...`));
+
+      if (existsSync(extDir)) {
+        console.log(chalk.yellow(`  ⚠  Extension "${manifest.name}" already exists, overwriting...`));
+        await rm(extDir, { recursive: true, force: true });
+      }
+
+      await cp(srcDir, extDir, { recursive: true });
+      console.log(chalk.green(`  ✅ Copied to ${extDir}`));
+
+      // Install npm dependencies if package.json exists
+      const pkgPath = join(extDir, 'package.json');
+      if (existsSync(pkgPath)) {
+        console.log(chalk.cyan('  📥 Installing dependencies...'));
+        try {
+          execSync('npm install --production', { cwd: extDir, stdio: 'pipe', timeout: 60_000 });
+          console.log(chalk.green('  ✅ Dependencies installed'));
+        } catch {
+          console.log(chalk.yellow('  ⚠  npm install failed (will retry on first use)'));
+        }
+      }
+
+      console.log(chalk.green(`\n✅ Extension "${manifest.name}" installed successfully!`));
+      console.log(chalk.gray(`   Run "brick" to start with the extension loaded.\n`));
+      return;
     }
 
-    // Copy extension directory
-    await cp(srcDir, extDir, { recursive: true });
-    console.log(chalk.green(`  ✅ Copied to ${extDir}`));
+    // ── npm package install ────────────────────────────────────────────
+    // Verify the package exists on npm
+    try {
+      execSync(`npm view ${JSON.stringify(extPath)} version`, { stdio: 'pipe', timeout: 15_000 });
+    } catch {
+      console.log(chalk.red(`\n❌ No brick.json found at "${extPath}" and npm package "${extPath}" not found.\n`));
+      process.exit(1);
+    }
 
-    // Install npm dependencies if package.json exists
-    const pkgPath = join(extDir, 'package.json');
-    if (existsSync(pkgPath)) {
-      console.log(chalk.cyan('  📥 Installing dependencies...'));
+    console.log(chalk.cyan(`\n📦 Installing "${extPath}" from npm...`));
+
+    // Create a temp directory for the package and install it
+    const tempDir = join(extParent, `.tmp-${Date.now()}`);
+    await mkdir(tempDir, { recursive: true });
+
+    try {
+      execSync(`npm install ${JSON.stringify(extPath)}`, { cwd: tempDir, stdio: 'pipe', timeout: 120_000 });
+
+      // Find brick.json in the installed package
+      const pkgDir = join(tempDir, 'node_modules', extPath);
+      const npmManifestPath = join(pkgDir, 'brick.json');
+
+      if (!existsSync(npmManifestPath)) {
+        console.log(chalk.yellow(`  ⚠  Package "${extPath}" does not contain a brick.json manifest.`));
+        await rm(tempDir, { recursive: true, force: true });
+        console.log(chalk.gray(`  Install as a regular npm dependency if it's a library.\n`));
+        process.exit(1);
+      }
+
+      const npmManifestRaw = await readFile(npmManifestPath, 'utf-8');
+      const npmManifest = JSON.parse(npmManifestRaw) as { name: string };
+
+      const extDir = join(extParent, npmManifest.name);
+
+      if (existsSync(extDir)) {
+        console.log(chalk.yellow(`  ⚠  Extension "${npmManifest.name}" already exists, overwriting...`));
+        await rm(extDir, { recursive: true, force: true });
+      }
+
+      // Copy from node_modules to extensions directory
+      await mkdir(extDir, { recursive: true });
+      await cp(pkgDir, extDir, { recursive: true });
+      await rm(tempDir, { recursive: true, force: true });
+
+      console.log(chalk.green(`  ✅ Installed to ${extDir}`));
+      console.log(chalk.green(`\n✅ Extension "${npmManifest.name}" installed successfully!`));
+      console.log(chalk.gray(`   Run "brick" to start with the extension loaded.\n`));
+    } catch (err) {
+      // Clean up temp dir on failure
+      if (existsSync(tempDir)) {
+        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      }
+      console.log(chalk.red(`\n❌ Failed to install "${extPath}": ${err instanceof Error ? err.message : String(err)}\n`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('list')
+  .description('List installed extensions')
+  .action(async () => {
+    const extDir = join(homedir(), '.brick', 'extensions');
+    if (!existsSync(extDir)) {
+      console.log(chalk.yellow('\nNo extensions installed.\n'));
+      return;
+    }
+    const { readdir } = await import('node:fs/promises');
+    const entries = await readdir(extDir, { withFileTypes: true });
+    const extNames = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name);
+
+    if (extNames.length === 0) {
+      console.log(chalk.yellow('\nNo extensions installed.\n'));
+      return;
+    }
+
+    console.log(chalk.bold('\nInstalled Extensions:\n'));
+    for (const name of extNames) {
+      const manifestPath = join(extDir, name, 'brick.json');
+      if (!existsSync(manifestPath)) continue;
       try {
-        execSync('npm install --production', { cwd: extDir, stdio: 'pipe', timeout: 60_000 });
-        console.log(chalk.green('  ✅ Dependencies installed'));
+        const content = await readFile(manifestPath, 'utf-8');
+        const manifest = JSON.parse(content) as { name: string; version: string; description?: string };
+        console.log(`  ${chalk.cyan(manifest.name)} v${manifest.version}`);
+        if (manifest.description) {
+          console.log(`    ${chalk.gray(manifest.description)}`);
+        }
+        console.log();
       } catch {
-        console.log(chalk.yellow('  ⚠  npm install failed (will retry on first use)'));
+        // Skip invalid manifests
+      }
+    }
+  });
+
+program
+  .command('uninstall <name>')
+  .description('Remove an installed extension')
+  .option('-f, --force', 'Skip confirmation')
+  .action(async (name: string, opts: { force?: boolean }) => {
+    const extDir = join(homedir(), '.brick', 'extensions', name);
+
+    if (!existsSync(extDir)) {
+      console.log(chalk.red(`\n❌ Extension "${name}" is not installed.\n`));
+      process.exit(1);
+    }
+
+    if (!opts.force) {
+      console.log(chalk.yellow(`\n⚠  Are you sure you want to uninstall "${name}"? (y/N)`));
+      // Read a single line from stdin
+      const { createInterface } = await import('node:readline');
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await new Promise<string>((resolve) => {
+        rl.question('  ', resolve);
+      });
+      rl.close();
+      if (answer.toLowerCase() !== 'y' && answer.toLowerCase() !== 'yes') {
+        console.log(chalk.gray('  Uninstall cancelled.\n'));
+        return;
       }
     }
 
-    console.log(chalk.green(`\n✅ Extension "${manifest.name}" installed successfully!`));
-    console.log(chalk.gray(`   Run "brick" to start with the extension loaded.\n`));
+    console.log(chalk.cyan(`\n🗑  Removing "${name}" extension...`));
+    await rm(extDir, { recursive: true, force: true });
+    console.log(chalk.green(`  ✅ Removed ${extDir}`));
+    console.log(chalk.green(`\n✅ Extension "${name}" uninstalled successfully!\n`));
   });
 
 async function main(): Promise<void> {
@@ -240,6 +365,12 @@ async function main(): Promise<void> {
   agent.on('context_warning', (data) => progress.showContextWarning(data));
   agent.on('error', (data) => progress.showError(data));
 
+  // ─── Tool Analytics ──────────────────────────────────────────────────
+  const analytics = new ToolAnalytics();
+  agent.on('tool_result', (data) => {
+    analytics.recordCall(data.name, data.durationMs, data.success);
+  });
+
   // ─── Commands ────────────────────────────────────────────────────────
   const cmdRegistry = new CommandRegistry();
   let shouldExit = false;
@@ -261,6 +392,7 @@ async function main(): Promise<void> {
         ? `Installed extensions:\n${exts.map(e => `  ${e.manifest.name} v${e.manifest.version} — ${e.manifest.description}${e.enabled ? '' : ' (disabled)'}`).join('\n')}`
         : 'No extensions installed.';
     },
+    getStats: () => analytics.getSummary(),
     exit: () => { shouldExit = true; },
   });
 
@@ -333,6 +465,7 @@ async function main(): Promise<void> {
       clearConversation: () => agent.getConversation().clear(),
       listTools: () => toolRegistry.listAll().map(t => `  ${t.name}`).join('\n'),
       listExtensions: () => extensionRegistry.listAll().map(e => `  ${e.manifest.name}`).join('\n'),
+      getStats: () => analytics.getSummary(),
       exit: () => { shouldExit = true; },
     });
 

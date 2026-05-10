@@ -30,6 +30,8 @@ export interface CommandContext {
   listTools: () => string;
   /** List installed extensions */
   listExtensions: () => string;
+  /** Get tool usage analytics summary */
+  getStats?: () => string;
   /** Exit the application */
   exit: () => void;
 }
@@ -141,6 +143,14 @@ export class CommandRegistry {
       description: 'List installed extensions',
       execute: async () => {
         return ctx.listExtensions();
+      },
+    });
+
+    this.register({
+      name: 'stats',
+      description: 'Show tool usage statistics',
+      execute: async () => {
+        return ctx.getStats?.() ?? 'Tool analytics not available.';
       },
     });
 

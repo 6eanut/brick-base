@@ -16,6 +16,7 @@ function createContext(): CommandContext {
     clearConversation: () => {},
     listTools: () => 'tool_a\ntool_b',
     listExtensions: () => 'ext_a',
+    getStats: () => 'Tool Usage Stats\n  read_file ─ 5 calls',
     exit: () => {},
   };
 }
@@ -156,5 +157,12 @@ describe('CommandRegistry', () => {
     registry.registerBuiltins(ctx);
     await registry.tryExecute('/quit', ctx);
     expect(exited).toBe(true);
+  });
+
+  it('built-in /stats shows analytics summary', async () => {
+    registry.registerBuiltins(createContext());
+    const result = await registry.tryExecute('/stats', createContext());
+    expect(result).toContain('Tool Usage Stats');
+    expect(result).toContain('read_file');
   });
 });

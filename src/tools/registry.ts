@@ -30,9 +30,19 @@ export interface ToolResult {
   data?: unknown;
 }
 
+export interface ToolRegistryOptions {
+  /** Maximum bytes allowed in a single tool result output (default: 256KB) */
+  maxResultBytes?: number;
+}
+
 export class ToolRegistry {
   private tools: Map<string, Tool> = new Map();
   private categorized: Map<string, Set<string>> = new Map();
+  private maxResultBytes: number;
+
+  constructor(options?: ToolRegistryOptions) {
+    this.maxResultBytes = options?.maxResultBytes ?? 262_144; // 256KB default
+  }
 
   /**
    * Register a tool, optionally in a category.
@@ -108,6 +118,20 @@ export class ToolRegistry {
   }
 
   /**
+   * Apply size limit to tool result output.
+   * Truncates and appends a truncation notice if output exceeds maxResultBytes.
+   */
+  private applySizeLimit(result: ToolResult): ToolResult {
+    if (result.output.length > this.maxResultBytes) {
+      return {
+        ...result,
+        output: result.output.slice(0, this.maxResultBytes) + `\n... [result truncated to ${this.maxResultBytes} bytes]`,
+      };
+    }
+    return result;
+  }
+
+  /**
    * Execute a tool by name with given arguments.
    */
   async execute(name: string, args: Record<string, unknown>): Promise<ToolResult> {
@@ -120,7 +144,8 @@ export class ToolRegistry {
       };
     }
     try {
-      return await tool.execute(args);
+      const result = await tool.execute(args);
+      return this.applySizeLimit(result);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return {
