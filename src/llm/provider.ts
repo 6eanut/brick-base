@@ -60,7 +60,26 @@ export interface LLMToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
-export class LLMProvider {
+/**
+ * Common interface for all LLM providers.
+ * Both OpenAI-compatible and Anthropic providers implement this.
+ */
+export interface Provider {
+  readonly name: string;
+  readonly defaultModel: string | undefined;
+  getCapabilities(): ProviderCapabilities;
+  chat(
+    messages: LLMMessage[],
+    options?: {
+      model?: string;
+      tools?: LLMToolDefinition[];
+      temperature?: number;
+      maxTokens?: number;
+    },
+  ): Promise<LLMResponse>;
+}
+
+export class LLMProvider implements Provider {
   private config: ProviderConfig;
   private capabilities: ProviderCapabilities;
 

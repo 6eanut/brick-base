@@ -9,7 +9,7 @@
  * 5. If LLM returns text → present to user
  */
 
-import { LLMProvider, LLMMessage, LLMToolDefinition } from '../llm/provider.js';
+import { type Provider, LLMMessage, LLMToolDefinition } from '../llm/provider.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { ConversationManager } from './conversation.js';
 import { ContextManager } from './context.js';
@@ -85,7 +85,7 @@ export type AgentEventHandler<E extends AgentEventType = AgentEventType> = (data
 export const MAX_AGENT_TURNS = 20;
 
 export class AgentLoop {
-  private provider: LLMProvider;
+  private provider: Provider;
   private toolRegistry: ToolRegistry;
   private conversation: ConversationManager;
   private contextManager: ContextManager;
@@ -117,7 +117,7 @@ export class AgentLoop {
   }
 
   constructor(
-    provider: LLMProvider,
+    provider: Provider,
     toolRegistry: ToolRegistry,
     options?: {
       conversation?: ConversationManager;
