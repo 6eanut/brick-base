@@ -17,6 +17,13 @@ import { ContextManager } from './context.js';
 /** Default timeout per tool execution (2 minutes) */
 const DEFAULT_TOOL_TIMEOUT_MS = 120_000;
 
+/** Default retry config for LLM API calls */
+const DEFAULT_RETRY_CONFIG = {
+  maxRetries: 2,
+  baseDelayMs: 1_000,
+  maxDelayMs: 10_000,
+};
+
 /**
  * Race a promise against a timeout.
  * Resolves to the promise's value if it completes in time,
@@ -30,6 +37,48 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     }, ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Retry a function on transient failures with exponential backoff + jitter.
+ * Retries on: network errors, 5xx, 429 (rate limit).
+ * Does NOT retry on 4xx (auth, bad request), type errors, or invalid input.
+ */
+async function retry<T>(
+  fn: () => Promise<T>,
+  label: string,
+  config?: Partial<typeof DEFAULT_RETRY_CONFIG>,
+): Promise<T> {
+  const { maxRetries, baseDelayMs, maxDelayMs } = { ...DEFAULT_RETRY_CONFIG, ...config };
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= maxRetries) throw err; // No more retries
+
+      const isTransient = isRetryableError(err);
+      if (!isTransient) throw err; // Non-transient, don't retry
+
+      // Exponential backoff with jitter
+      const delay = Math.min(baseDelayMs * Math.pow(2, attempt), maxDelayMs);
+      const jitter = Math.random() * delay * 0.3;
+      await new Promise(r => setTimeout(r, delay + jitter));
+    }
+  }
+
+  throw new Error(`Unexpected: ${label} exhausted all retries`);
+}
+
+function isRetryableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  // Network / TLS errors
+  if (msg.includes('fetch') || msg.includes('network') || msg.includes('TLS') || msg.includes('timed out')) return true;
+  // 429 rate limit
+  if (msg.includes('429') || msg.includes('rate limit') || msg.includes('too many requests')) return true;
+  // 5xx server errors
+  if (/5\d{2}/.test(msg) && (msg.includes('error') || msg.includes('Internal') || msg.includes('Server'))) return true;
+  return false;
 }
 
 export const AgentMode = {
@@ -86,6 +135,7 @@ export type AgentEventType =
   | 'tool_result'
   | 'turn_end'
   | 'final_response'
+  | 'context_warning'
   | 'error'
   ;
 
@@ -94,6 +144,7 @@ export interface AgentEventPayloads {
   llm_request: { turn: number };
   llm_token: { turn: number; token: string; type: 'text' | 'thinking' };
   llm_response: { turn: number; content?: string; toolCount: number };
+  context_warning: { message: string };
   tool_call: { turn: number; name: string; args: Record<string, unknown> };
   tool_result: { turn: number; name: string; success: boolean; output: string; error?: string; durationMs: number };
   turn_end: { turn: number; toolCalls: number };
@@ -156,6 +207,10 @@ export class AgentLoop {
     this.contextManager = options?.contextManager ?? new ContextManager();
     this.config = { ...DEFAULT_CONFIG, ...options?.config };
 
+    // Set context window from provider capabilities
+    const caps = provider.getCapabilities();
+    this.contextManager.setMaxTokens(caps.maxTokens);
+
     // Set system prompt
     this.conversation.setSystemPrompt(this.buildSystemPrompt());
   }
@@ -167,6 +222,9 @@ export class AgentLoop {
     this.conversation.addUserMessage(input);
 
     let turns = 0;
+
+    // Persist user input
+    this.conversation.persist().catch(() => {});
     let totalTokens = 0;
     let toolsCalled = false;
     let finalResponse = '';
@@ -186,17 +244,21 @@ export class AgentLoop {
 
       let response: import('../llm/provider.js').LLMResponse;
       try {
-        response = await this.provider.chat(messages, {
-          model: this.config.model,
-          tools: toolDefs,
-          temperature: this.config.temperature,
-          onToken: (token: string) => {
-            this.emit('llm_token', { turn: turns, token, type: 'text' });
-          },
-          onThinkingToken: (token: string) => {
-            this.emit('llm_token', { turn: turns, token, type: 'thinking' });
-          },
-        });
+        response = await retry(
+          () =>
+            this.provider.chat(messages, {
+              model: this.config.model,
+              tools: toolDefs,
+              temperature: this.config.temperature,
+              onToken: (token: string) => {
+                this.emit('llm_token', { turn: turns, token, type: 'text' });
+              },
+              onThinkingToken: (token: string) => {
+                this.emit('llm_token', { turn: turns, token, type: 'thinking' });
+              },
+            }),
+          'LLM chat',
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.emit('error', { message });
@@ -329,6 +391,9 @@ export class AgentLoop {
           this.conversation.addAssistantMessage(response.content);
         }
 
+        // Persist all conversation changes from this turn
+        this.conversation.persist().catch(() => {});
+
         // Emit turn end
         this.emit('turn_end', { turn: turns, toolCalls: response.toolCalls.length });
 
@@ -339,6 +404,9 @@ export class AgentLoop {
       // No tool calls — final response
       finalResponse = response.content ?? '';
       this.conversation.addAssistantMessage(finalResponse);
+
+      // Persist final response
+      this.conversation.persist().catch(() => {});
 
       // Emit final response
       this.emit('final_response', { response: finalResponse, turns, totalTokens });
@@ -393,6 +461,16 @@ export class AgentLoop {
 
   private prepareMessages(): LLMMessage[] {
     const messages = this.conversation.getMessages();
+
+    // Check if we're near the limit
+    const estimatedTokens = this.contextManager.estimateMessageTokens(messages);
+    const caps = this.provider.getCapabilities();
+    const threshold = caps.maxTokens * 0.8;
+    if (estimatedTokens > threshold) {
+      this.emit('context_warning', {
+        message: `Context at ~${Math.round(estimatedTokens / 1000)}K/${(caps.maxTokens / 1000).toFixed(0)}K tokens`,
+      });
+    }
 
     // Truncate if needed
     const truncated = this.contextManager.truncateMessages(messages);

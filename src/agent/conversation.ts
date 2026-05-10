@@ -3,7 +3,13 @@
  *
  * Manages a multi-turn conversation: stores messages, supports
  * system prompts, and provides the message array for LLM API calls.
+ * Persists conversations to disk for session-to-session continuity.
  */
+
+import { mkdir, readFile, writeFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -22,12 +28,19 @@ export interface Conversation {
   metadata?: Record<string, unknown>;
 }
 
+const CONVERSATIONS_DIR = join(homedir(), '.brick', 'conversations');
+
 export class ConversationManager {
   private conversations: Map<string, Conversation> = new Map();
   private activeId: string | null = null;
+  private persistEnabled: boolean = true;
 
-  constructor() {
-    this.create();
+  constructor(persistEnabled?: boolean) {
+    this.persistEnabled = persistEnabled ?? true;
+    // If persistence is enabled but no conversations loaded yet, create one
+    if (!this.activeId) {
+      this.create();
+    }
   }
 
   /**
@@ -137,5 +150,68 @@ export class ConversationManager {
    */
   listAll(): Conversation[] {
     return Array.from(this.conversations.values());
+  }
+
+  // ─── Persistence ──────────────────────────────────────────────────────
+
+  /**
+   * Persist the active conversation to disk.
+   * Called automatically after every mutation.
+   */
+  async persist(): Promise<void> {
+    if (!this.persistEnabled) return;
+    const conv = this.getActive();
+    try {
+      await mkdir(CONVERSATIONS_DIR, { recursive: true });
+      const filePath = join(CONVERSATIONS_DIR, `${conv.id}.json`);
+      await writeFile(filePath, JSON.stringify(conv, null, 2), 'utf-8');
+    } catch (err) {
+      // Silently fail — persistence is best-effort
+    }
+  }
+
+  /**
+   * Load the most recent conversation from disk, if any.
+   * Falls back to creating a new conversation.
+   */
+  async resume(): Promise<Conversation> {
+    if (!this.persistEnabled) return this.create();
+    try {
+      await mkdir(CONVERSATIONS_DIR, { recursive: true });
+      const files = await readdir(CONVERSATIONS_DIR);
+      const jsonFiles = files
+        .filter(f => f.endsWith('.json'))
+        .sort()
+        .reverse();
+
+      if (jsonFiles.length === 0) return this.create();
+
+      const latest = jsonFiles[0];
+      const content = await readFile(join(CONVERSATIONS_DIR, latest), 'utf-8');
+      const conv = JSON.parse(content) as Conversation;
+
+      // Validate basic structure
+      if (!conv.id || !Array.isArray(conv.messages)) {
+        return this.create();
+      }
+
+      this.conversations.set(conv.id, conv);
+      this.activeId = conv.id;
+      return conv;
+    } catch {
+      return this.create();
+    }
+  }
+
+  /**
+   * Delete a conversation file from disk.
+   */
+  async deletePersisted(id: string): Promise<void> {
+    try {
+      const filePath = join(CONVERSATIONS_DIR, `${id}.json`);
+      await import('node:fs/promises').then(fs => fs.rm(filePath, { force: true }));
+    } catch {
+      // Best-effort
+    }
   }
 }

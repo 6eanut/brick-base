@@ -208,6 +208,7 @@ async function main(): Promise<void> {
   agent.on('tool_result', (data) => progress.showToolResult(data));
   agent.on('turn_end', (data) => progress.showTurnEnd(data));
   agent.on('final_response', () => progress.finish());
+  agent.on('context_warning', (data) => progress.showContextWarning(data));
   agent.on('error', (data) => progress.showError(data));
 
   // ─── Commands ────────────────────────────────────────────────────────

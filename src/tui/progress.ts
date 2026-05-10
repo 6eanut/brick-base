@@ -194,6 +194,13 @@ export class ProgressRenderer {
     console.log(`  ${chalk.red('❌ Error')} ${chalk.red(data.message)}`);
   }
 
+  /**
+   * Show context window warning.
+   */
+  showContextWarning(data: AgentEventPayloads['context_warning']): void {
+    console.log(`  ${chalk.yellow('⚠')} ${chalk.yellow(data.message)}`);
+  }
+
   // ─── Helpers ──────────────────────────────────────────────────────────────
 
   /**
