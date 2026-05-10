@@ -202,6 +202,7 @@ async function main(): Promise<void> {
   // ─── Progress Visualization ──────────────────────────────────────────
   const progress = new ProgressRenderer();
   agent.on('llm_request', (data) => progress.showThinking(data));
+  agent.on('llm_token', (data) => progress.showToken(data));
   agent.on('llm_response', (data) => progress.showLLMResponse(data));
   agent.on('tool_call', (data) => progress.showToolCall(data));
   agent.on('tool_result', (data) => progress.showToolResult(data));

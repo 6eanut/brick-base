@@ -26,15 +26,22 @@ export class ProgressRenderer {
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
   private spinnerFrame = 0;
   private spinnerTurn = 0;
+  private streamingTurn = 0;
+  private isStreaming = false;
+  private streamedContent = '';
 
   /**
    * Start the thinking spinner.
    * Called on 'llm_request' event.
    */
   showThinking(data: AgentEventPayloads['llm_request']): void {
+    this.clearStreaming();
     this.clearSpinner();
     this.spinnerTurn = data.turn;
     this.spinnerFrame = 0;
+    this.streamingTurn = 0;
+    this.isStreaming = false;
+    this.streamedContent = '';
     const label = `LLM is thinking...  Turn ${this.spinnerTurn}`;
     process.stdout.write(`  ${SPINNER_FRAMES[0]} ${label}`);
     this.spinnerTimer = setInterval(() => {
@@ -56,11 +63,23 @@ export class ProgressRenderer {
   }
 
   /**
+   * Clear the streaming line (if active).
+   */
+  private clearStreaming(): void {
+    if (this.isStreaming) {
+      this.isStreaming = false;
+      this.streamedContent = '';
+      process.stdout.write('\r\x1b[K');
+    }
+  }
+
+  /**
    * Show LLM response summary.
    * Called on 'llm_response' event. Stops the spinner and optionally
    * displays the LLM's intermediate reasoning.
    */
   showLLMResponse(data: AgentEventPayloads['llm_response']): void {
+    this.clearStreaming();
     this.clearSpinner();
     const toolCount = data.toolCount ?? 0;
 
@@ -75,6 +94,41 @@ export class ProgressRenderer {
       }
       console.log(`  ${chalk.cyan('🔧')} ${chalk.bold(`Requesting ${toolCount} tool call(s)...`)}`);
     }
+  }
+
+  /**
+   * Show a streaming token.
+   * Called on 'llm_token' event.
+   *
+   * On first token: clears spinner, shows streaming header.
+   * On subsequent tokens: updates single-line preview (last ~80 chars).
+   * Thinking tokens are accumulated silently (not rendered to avoid flicker).
+   */
+  showToken(data: AgentEventPayloads['llm_token']): void {
+    // Thinking tokens are accumulated but not rendered
+    if (data.type === 'thinking') return;
+
+    if (!this.isStreaming) {
+      this.clearSpinner();
+      this.isStreaming = true;
+      this.streamingTurn = data.turn;
+      this.streamedContent = '';
+      process.stdout.write(`  ${chalk.cyan('📝')} ${chalk.bold('LLM output:')} `);
+    }
+
+    this.streamedContent += data.token;
+
+    // Show last ~80 chars as a preview, replacing newlines with spaces
+    const preview = this.streamedContent
+      .replace(/\n/g, ' ')
+      .replace(/\s+/g, ' ')
+      // Strip ANSI escape codes to prevent terminal corruption
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+      .slice(-80)
+      .trim();
+
+    // Write the preview, then clear to end of line
+    process.stdout.write(`\r  ${chalk.cyan('📝')} ${chalk.bold('LLM output:')} ${chalk.gray(preview)}\x1b[K`);
   }
 
   /**
@@ -128,6 +182,7 @@ export class ProgressRenderer {
    * left visible — they serve as an execution trace for the user.
    */
   finish(): void {
+    this.clearStreaming();
     this.clearSpinner();
   }
 

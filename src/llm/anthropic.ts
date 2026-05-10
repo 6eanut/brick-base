@@ -13,6 +13,7 @@
  */
 
 import {
+  type ChatOptions,
   type Provider,
   type ProviderConfig,
   type ProviderCapabilities,
@@ -21,6 +22,7 @@ import {
   type LLMToolDefinition,
   type ToolCallRequest,
 } from './provider.js';
+import { parseSseStream } from './sse-parser.js';
 
 // ─── Anthropic API types ────────────────────────────────────────────────────
 
@@ -78,6 +80,7 @@ interface AnthropicApiRequest {
   temperature?: number;
   tools?: AnthropicToolDefinition[];
   thinking?: { type: 'enabled'; budget_tokens: number };
+  stream?: boolean;
 }
 
 interface AnthropicApiResponse {
@@ -145,12 +148,7 @@ export class AnthropicProvider implements Provider {
    */
   async chat(
     messages: LLMMessage[],
-    options?: {
-      model?: string;
-      tools?: LLMToolDefinition[];
-      temperature?: number;
-      maxTokens?: number;
-    },
+    options?: ChatOptions,
   ): Promise<LLMResponse> {
     const model = options?.model ?? this.config.defaultModel ?? DEFAULT_MODEL;
 
@@ -186,6 +184,11 @@ export class AnthropicProvider implements Provider {
       };
     }
 
+    const isStreaming = !!options?.onToken;
+    if (isStreaming) {
+      body.stream = true;
+    }
+
     // Make API request
     const baseUrl = this.config.baseUrl ?? 'https://api.anthropic.com';
     const response = await fetch(`${baseUrl}/v1/messages`, {
@@ -203,6 +206,12 @@ export class AnthropicProvider implements Provider {
       throw new Error(`Anthropic API error (${response.status}): ${errorText}`);
     }
 
+    // ─── Streaming path ────────────────────────────────────────────────
+    if (isStreaming) {
+      return this.streamChat(response, options, model);
+    }
+
+    // ─── Non-streaming path ────────────────────────────────────────────
     const data = (await response.json()) as AnthropicApiResponse;
 
     return this.toLLMResponse(data, model);
@@ -343,6 +352,204 @@ export class AnthropicProvider implements Provider {
         promptTokens: data.usage.input_tokens,
         completionTokens: data.usage.output_tokens,
         totalTokens: data.usage.input_tokens + data.usage.output_tokens,
+      },
+      thinking: thinkingContent,
+    };
+  }
+
+  // ─── Streaming ──────────────────────────────────────────────────────
+
+  /**
+   * Stream a chat completion response from the Anthropic API.
+   *
+   * Anthropic's streaming format uses named events:
+   *   event: content_block_delta
+   *   data: {"type":"content_block_delta","index":0,"delta":{"text":"hello"}}
+   *
+   * Each content block (text, thinking, tool_use) has its own lifecycle:
+   *   content_block_start → (multiple content_block_delta) → content_block_stop
+   */
+  private async streamChat(
+    response: Response,
+    options: ChatOptions | undefined,
+    model: string,
+  ): Promise<LLMResponse> {
+    let content = '';
+    let thinkingContent: string | undefined;
+    const toolCalls: ToolCallRequest[] = [];
+    const onToken = options?.onToken;
+    const onThinkingToken = options?.onThinkingToken;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let resolvedModel = model;
+
+    // Track block types by index to route deltas correctly
+    const blockTypes = new Map<number, 'text' | 'thinking' | 'tool_use'>();
+
+    // Accumulate tool_use blocks by index
+    const inboundToolCalls = new Map<number, ToolCallRequest>();
+
+    // Track malformed chunks for error detection
+    let malformedChunks = 0;
+
+    for await (const event of parseSseStream(response)) {
+      switch (event.event) {
+        case 'message_start': {
+          // Extract model name and input token usage from the message
+          // data: {"type":"message_start","message":{"id":"...","model":"claude-sonnet-4-20260506","usage":{"input_tokens":100}}}
+          try {
+            const msgData = JSON.parse(event.data) as {
+              type: string;
+              message: { model?: string; usage: { input_tokens: number } };
+            };
+            if (msgData.message?.model) {
+              resolvedModel = msgData.message.model;
+            }
+            inputTokens = msgData.message?.usage?.input_tokens ?? 0;
+          } catch {
+            malformedChunks++;
+            if (malformedChunks >= 3) {
+              throw new Error(
+                `Anthropic stream corrupted: ${malformedChunks} malformed chunks received`,
+              );
+            }
+          }
+          break;
+        }
+
+        case 'content_block_start': {
+          // data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+          // data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}
+          // data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"...","name":"...","input":{}}}
+          let blockData: { type: string; [key: string]: unknown };
+          try {
+            blockData = JSON.parse(event.data);
+          } catch {
+            malformedChunks++;
+            if (malformedChunks >= 3) {
+              throw new Error(
+                `Anthropic stream corrupted: ${malformedChunks} malformed chunks received`,
+              );
+            }
+            continue;
+          }
+          const block = blockData.content_block as { type: string; [key: string]: unknown } | undefined;
+          if (!block) continue;
+
+          const index = blockData.index as number;
+          blockTypes.set(index, block.type as 'text' | 'thinking' | 'tool_use');
+
+          if (block.type === 'tool_use') {
+            inboundToolCalls.set(index, {
+              id: block.id as string,
+              type: 'function',
+              function: {
+                name: block.name as string,
+                arguments: '',
+              },
+            });
+          }
+          break;
+        }
+
+        case 'content_block_delta': {
+          // data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+          // data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"..."}}
+          let deltaData: { index: number; delta: { type: string; [key: string]: unknown } };
+          try {
+            deltaData = JSON.parse(event.data);
+          } catch {
+            malformedChunks++;
+            if (malformedChunks >= 3) {
+              throw new Error(
+                `Anthropic stream corrupted: ${malformedChunks} malformed chunks received`,
+              );
+            }
+            continue;
+          }
+
+          const { index, delta } = deltaData;
+          const blockType = blockTypes.get(index);
+
+          if (delta.type === 'text_delta' && blockType === 'text') {
+            const text = delta.text as string;
+            content += text;
+            onToken?.(text);
+          } else if (delta.type === 'thinking_delta' && blockType === 'thinking') {
+            const thinking = delta.thinking as string;
+            if (!thinkingContent) thinkingContent = '';
+            thinkingContent += thinking;
+            onThinkingToken?.(thinking);
+          } else if (delta.type === 'input_json_delta' && blockType === 'tool_use') {
+            const partial = delta.partial_json as string;
+            const existing = inboundToolCalls.get(index);
+            if (existing) {
+              existing.function.arguments += partial;
+            }
+          }
+          break;
+        }
+
+        case 'content_block_stop': {
+          // Finalize tool call at this index
+          // data: {"type":"content_block_stop","index":0}
+          let stopData: { index: number };
+          try {
+            stopData = JSON.parse(event.data);
+          } catch {
+            malformedChunks++;
+            if (malformedChunks >= 3) {
+              throw new Error(
+                `Anthropic stream corrupted: ${malformedChunks} malformed chunks received`,
+              );
+            }
+            continue;
+          }
+          const tc = inboundToolCalls.get(stopData.index);
+          if (tc) {
+            // Shallow-copy to prevent mutation if a stray delta arrives later
+            toolCalls.push({
+              ...tc,
+              function: { ...tc.function },
+            });
+            inboundToolCalls.delete(stopData.index);
+          }
+          break;
+        }
+
+        case 'message_delta': {
+          // data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":50}}
+          try {
+            const deltaData = JSON.parse(event.data) as {
+              type: string;
+              usage: { output_tokens: number };
+            };
+            outputTokens = deltaData.usage?.output_tokens ?? 0;
+          } catch {
+            malformedChunks++;
+            if (malformedChunks >= 3) {
+              throw new Error(
+                `Anthropic stream corrupted: ${malformedChunks} malformed chunks received`,
+              );
+            }
+          }
+          break;
+        }
+
+        case 'ping':
+          // Keepalive — ignore
+          break;
+      }
+    }
+
+    return {
+      content,
+      toolCalls,
+      model: resolvedModel,
+      usage: {
+        promptTokens: inputTokens,
+        completionTokens: outputTokens,
+        totalTokens: inputTokens + outputTokens,
       },
       thinking: thinkingContent,
     };

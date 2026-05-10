@@ -60,6 +60,7 @@ export interface AgentTurnResult {
 export type AgentEventType =
   | 'turn_start'
   | 'llm_request'
+  | 'llm_token'
   | 'llm_response'
   | 'tool_call'
   | 'tool_result'
@@ -71,6 +72,7 @@ export type AgentEventType =
 export interface AgentEventPayloads {
   turn_start: { turn: number };
   llm_request: { turn: number };
+  llm_token: { turn: number; token: string; type: 'text' | 'thinking' };
   llm_response: { turn: number; content?: string; toolCount: number };
   tool_call: { turn: number; name: string; args: Record<string, unknown> };
   tool_result: { turn: number; name: string; success: boolean; output: string; error?: string; durationMs: number };
@@ -165,6 +167,12 @@ export class AgentLoop {
           model: this.config.model,
           tools: toolDefs,
           temperature: this.config.temperature,
+          onToken: (token: string) => {
+            this.emit('llm_token', { turn: turns, token, type: 'text' });
+          },
+          onThinkingToken: (token: string) => {
+            this.emit('llm_token', { turn: turns, token, type: 'thinking' });
+          },
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
