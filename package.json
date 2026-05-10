@@ -13,6 +13,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run build",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
     "lint": "eslint src/",
