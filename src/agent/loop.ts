@@ -86,6 +86,9 @@ export type AgentEventHandler<E extends AgentEventType = AgentEventType> = (data
 /** Maximum agent loop turns before giving up */
 export const MAX_AGENT_TURNS = 20;
 
+/** Maximum concurrent tool executions per LLM response */
+export const MAX_CONCURRENT_TOOLS = 10;
+
 export class AgentLoop {
   private provider: Provider;
   private toolRegistry: ToolRegistry;
@@ -193,43 +196,98 @@ export class AgentLoop {
       if (response.toolCalls.length > 0) {
         toolsCalled = true;
 
-        // Execute each tool call
+        // ── Step 1: Parse all arguments (serial, lightweight) ─────────
+        type PendingTool = {
+          tc: typeof response.toolCalls[0];
+          args: Record<string, unknown>;
+          error?: string;
+        };
+        const pendingTools: PendingTool[] = [];
+
         for (const tc of response.toolCalls) {
           let args: Record<string, unknown> = {};
           try {
             args = JSON.parse(tc.function.arguments);
           } catch {
-            // Invalid JSON arguments — send error back to LLM
-            this.conversation.addToolMessage(
-              tc.id,
-              tc.function.name,
-              `Error: Invalid JSON arguments: ${tc.function.arguments}`,
-            );
+            // Invalid JSON — skip execution, report error to LLM
+            pendingTools.push({
+              tc,
+              args: {},
+              error: `Error: Invalid JSON arguments: ${tc.function.arguments}`,
+            });
             continue;
           }
+          pendingTools.push({ tc, args });
+        }
 
-          // Emit tool call before execution
-          this.emit('tool_call', {
-            turn: turns,
-            name: tc.function.name,
-            args,
-          });
+        // ── Step 2: Emit tool_call events for ALL tools ──────────────
+        for (const pt of pendingTools) {
+          this.emit('tool_call', { turn: turns, name: pt.tc.function.name, args: pt.args });
+        }
 
-          const startTime = Date.now();
-          const result = await this.toolRegistry.execute(tc.function.name, args);
-          const durationMs = Date.now() - startTime;
+        // ── Step 3: Execute all valid tools in parallel ──────────────
+        // Results are stored by original index to preserve order.
+        const results: Array<{
+          result: import('../tools/registry.js').ToolResult;
+          durationMs: number;
+        } | { error: string }> = new Array(pendingTools.length);
 
-          // Emit tool result after execution
-          this.emit('tool_result', {
-            turn: turns,
-            name: tc.function.name,
-            success: result.success,
-            output: result.output,
-            error: result.error,
-            durationMs,
-          });
+        // Execute in batches to cap concurrency
+        for (let i = 0; i < pendingTools.length; i += MAX_CONCURRENT_TOOLS) {
+          const batch = pendingTools.slice(i, i + MAX_CONCURRENT_TOOLS);
+          const batchResults = await Promise.all(
+            batch.map(async (pt, batchIdx) => {
+              const originalIdx = i + batchIdx;
+              // Skip tools with parse errors
+              if (pt.error) {
+                return { idx: originalIdx, result: null, durationMs: 0, error: pt.error };
+              }
+              const startTime = Date.now();
+              const result = await this.toolRegistry.execute(pt.tc.function.name, pt.args);
+              const durationMs = Date.now() - startTime;
+              return { idx: originalIdx, result, durationMs, error: undefined };
+            }),
+          );
 
-          this.conversation.addToolMessage(tc.id, tc.function.name, this.formatToolResult(result));
+          for (const br of batchResults) {
+            if (br.error) {
+              results[br.idx] = { error: br.error };
+            } else {
+              results[br.idx] = { result: br.result!, durationMs: br.durationMs };
+            }
+          }
+        }
+
+        // ── Step 4: Emit results + add tool messages (ordered) ───────
+        for (let i = 0; i < pendingTools.length; i++) {
+          const pt = pendingTools[i];
+          const res = results[i];
+
+          if ('error' in res) {
+            this.emit('tool_result', {
+              turn: turns,
+              name: pt.tc.function.name,
+              success: false,
+              output: '',
+              error: res.error,
+              durationMs: 0,
+            });
+            this.conversation.addToolMessage(pt.tc.id, pt.tc.function.name, res.error);
+          } else {
+            this.emit('tool_result', {
+              turn: turns,
+              name: pt.tc.function.name,
+              success: res.result.success,
+              output: res.result.output,
+              error: res.result.error,
+              durationMs: res.durationMs,
+            });
+            this.conversation.addToolMessage(
+              pt.tc.id,
+              pt.tc.function.name,
+              this.formatToolResult(res.result),
+            );
+          }
         }
 
         // Add assistant's tool call message to conversation
