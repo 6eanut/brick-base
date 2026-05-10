@@ -59,6 +59,9 @@ const URL_PATTERNS: Array<{ hostname: string; provider: ProviderKind }> = [
   { hostname: 'api.openai.com', provider: 'openai' },
   { hostname: 'generativelanguage.googleapis.com', provider: 'google' },
   { hostname: 'api.deepseek.com', provider: 'deepseek' },
+  // Ollama runs locally — match localhost:11434 or any host on port 11434
+  { hostname: 'localhost:11434', provider: 'ollama' },
+  { hostname: '127.0.0.1:11434', provider: 'ollama' },
 ];
 
 /**

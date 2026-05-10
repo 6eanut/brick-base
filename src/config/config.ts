@@ -62,7 +62,14 @@ export interface BrickConfig {
 
 const DEFAULT_CONFIG: BrickConfig = {
   defaultProvider: 'openai',
-  providers: {},
+  providers: {
+    deepseek: {
+      baseUrl: 'https://api.deepseek.com',
+    },
+    ollama: {
+      baseUrl: 'http://localhost:11434/v1',
+    },
+  },
   extensions: [],
   extensionPaths: [
     './extensions',
@@ -130,10 +137,17 @@ export class ConfigManager {
     }
 
     const providerName = envProvider ?? this.config.defaultProvider;
-    if (envKey || envBaseUrl || envModel) {
+
+    // Provider-specific env vars (e.g. DEEPSEEK_API_KEY, ANTHROPIC_API_KEY)
+    const providerEnvKey = process.env.DEEPSEEK_API_KEY
+      ?? process.env.ANTHROPIC_API_KEY
+      ?? process.env.GOOGLE_API_KEY
+      ?? undefined;
+
+    if (envKey || providerEnvKey || envBaseUrl || envModel) {
       this.config.providers[providerName] = {
         ...this.config.providers[providerName],
-        apiKey: envKey ?? this.config.providers[providerName]?.apiKey,
+        apiKey: envKey ?? providerEnvKey ?? this.config.providers[providerName]?.apiKey,
         baseUrl: envBaseUrl ?? this.config.providers[providerName]?.baseUrl,
         defaultModel: envModel ?? this.config.providers[providerName]?.defaultModel,
       };

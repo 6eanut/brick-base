@@ -128,7 +128,12 @@ async function main(): Promise<void> {
   const detectedProvider = providedProvider && providedProvider !== 'auto'
     ? providedProvider
     : detectProvider({
-        apiKey: opts.apiKey ?? process.env.ANTHROPIC_API_KEY ?? process.env.BRICK_API_KEY ?? undefined,
+        apiKey: opts.apiKey
+          ?? process.env.ANTHROPIC_API_KEY
+          ?? process.env.GOOGLE_API_KEY
+          ?? process.env.DEEPSEEK_API_KEY
+          ?? process.env.BRICK_API_KEY
+          ?? undefined,
         model: modelFromOpts,
         baseUrl: opts.baseUrl ?? undefined,
         explicit: providedProvider === 'auto' ? undefined : providedProvider,
@@ -161,8 +166,10 @@ async function main(): Promise<void> {
     providerCfg.apiKey ||
     opts.apiKey ||
     process.env.BRICK_API_KEY ||
-    process.env.ANTHROPIC_API_KEY
-  );
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.DEEPSEEK_API_KEY
+  ) || providerName === 'ollama'; // Ollama is local, no key needed
 
   if (!hasApiKey) {
     console.log(chalk.yellow('\n⚠  No API key configured. Set BRICK_API_KEY or pass --api-key.'));

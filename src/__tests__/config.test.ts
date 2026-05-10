@@ -14,7 +14,10 @@ describe('ConfigManager', () => {
 
   it('should have default values on construction', () => {
     expect(manager.get('defaultProvider')).toBe('openai');
-    expect(manager.get('providers')).toEqual({});
+    expect(manager.get('providers')).toEqual({
+      deepseek: { baseUrl: 'https://api.deepseek.com' },
+      ollama: { baseUrl: 'http://localhost:11434/v1' },
+    });
     expect(manager.get('extensions')).toEqual([]);
     expect(manager.get('extensionPaths')).toEqual([
       './extensions',
