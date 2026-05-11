@@ -28,6 +28,7 @@ import { createGitTools } from './tools/git.js';
 import { AgentLoop, AgentMode } from './agent/loop.js';
 import { CommandRegistry } from './commands/registry.js';
 import { ExtensionRegistry } from './extensions/registry.js';
+import { BRICK_VERSION, checkExtensionCompatibility } from './extensions/compatibility.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
 import { ToolAnalytics } from './tools/analytics.js';
 import { ProgressRenderer } from './tui/progress.js';
@@ -39,7 +40,7 @@ const program = new Command();
 program
   .name('brick')
   .description('Brick — a modular AI coding agent')
-  .version('0.1.0')
+  .version(BRICK_VERSION)
   .option('-m, --model <name>', 'LLM model to use')
   .option('-p, --provider <name>', 'LLM provider to use')
   .option('--plan', 'Start in plan mode')
@@ -73,13 +74,19 @@ program
 
     if (existsSync(localManifestPath)) {
       // ── Local path install ──────────────────────────────────────────
-      let manifest: { name: string };
+      let manifest: { name: string; brickVersion?: string };
       try {
         const content = await readFile(localManifestPath, 'utf-8');
         manifest = JSON.parse(content);
       } catch {
         console.log(chalk.red(`\n❌ Invalid brick.json at ${srcDir}\n`));
         process.exit(1);
+      }
+
+      // Check Brick version compatibility (non-blocking warning)
+      const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
+      if (!compatResult.compatible && compatResult.message) {
+        console.log(chalk.yellow(`  ⚠  ${compatResult.message}`));
       }
 
       const extDir = join(extParent, manifest.name);
@@ -140,7 +147,13 @@ program
       }
 
       const npmManifestRaw = await readFile(npmManifestPath, 'utf-8');
-      const npmManifest = JSON.parse(npmManifestRaw) as { name: string };
+      const npmManifest = JSON.parse(npmManifestRaw) as { name: string; brickVersion?: string };
+
+      // Check Brick version compatibility (non-blocking warning)
+      const npmCompatResult = checkExtensionCompatibility(npmManifest.brickVersion, npmManifest.name);
+      if (!npmCompatResult.compatible && npmCompatResult.message) {
+        console.log(chalk.yellow(`  ⚠  ${npmCompatResult.message}`));
+      }
 
       const extDir = join(extParent, npmManifest.name);
 
@@ -191,8 +204,13 @@ program
       if (!existsSync(manifestPath)) continue;
       try {
         const content = await readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(content) as { name: string; version: string; description?: string };
-        console.log(`  ${chalk.cyan(manifest.name)} v${manifest.version}`);
+        const manifest = JSON.parse(content) as { name: string; version: string; description?: string; brickVersion?: string };
+
+        // Check compatibility
+        const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
+        const compatFlag = compatResult.compatible ? '' : chalk.yellow(' ⚠');
+
+        console.log(`  ${chalk.cyan(manifest.name)} v${manifest.version}${compatFlag}`);
         if (manifest.description) {
           console.log(`    ${chalk.gray(manifest.description)}`);
         }
@@ -325,6 +343,14 @@ program
 
         if (!existsSync(newManifestPath)) {
           throw new Error('Updated package has no brick.json');
+        }
+
+        // Check compatibility of the new version
+        const newManifestRaw = await readFile(newManifestPath, 'utf-8');
+        const newManifest = JSON.parse(newManifestRaw) as { brickVersion?: string };
+        const updateCompatResult = checkExtensionCompatibility(newManifest.brickVersion, extName);
+        if (!updateCompatResult.compatible && updateCompatResult.message) {
+          console.log(chalk.yellow(`  ⚠  ${updateCompatResult.message}`));
         }
 
         // Remove old extension dir
@@ -460,7 +486,11 @@ async function main(): Promise<void> {
           for (const tool of extTools) {
             toolRegistry.register(tool, `extension:${ext.manifest.name}`);
           }
-          console.log(chalk.green(`  ✅ ${ext.manifest.name} v${ext.manifest.version}`));
+          // Check compatibility for display
+          const compatResult = checkExtensionCompatibility(ext.manifest.brickVersion, ext.manifest.name);
+          const statusIcon = compatResult.compatible ? chalk.green('✅') : chalk.yellow('⚠️');
+          const compatSuffix = compatResult.compatible ? '' : chalk.yellow(' (incompatible Brick version)');
+          console.log(`${statusIcon} ${ext.manifest.name} v${ext.manifest.version}${compatSuffix}`);
         } catch (err) {
           console.log(chalk.red(`  ❌ ${ext.manifest.name}: ${err}`));
         }
@@ -554,7 +584,7 @@ async function main(): Promise<void> {
   });
 
   // ─── Print banner ────────────────────────────────────────────────────
-  console.log(chalk.bold('\n🧱 Brick — Modular AI Coding Agent v0.1.0'));
+  console.log(chalk.bold(`\n🧱 Brick — Modular AI Coding Agent v${BRICK_VERSION}`));
   console.log(chalk.gray(`  Provider: ${providerName}`));
   console.log(chalk.gray(`  Model: ${opts.model ?? providerCfg.defaultModel ?? 'auto'}`));
   console.log(chalk.gray(`  Tools: ${toolRegistry.listAll().length} | Mode: ${agent.getMode()}`));

@@ -23,6 +23,7 @@ export { ToolAnalytics, type ToolStat } from './tools/analytics.js';
 
 // Extensions
 export { ExtensionRegistry, type ExtensionManifest, type ExtensionState } from './extensions/registry.js';
+export { BRICK_VERSION, checkExtensionCompatibility, type CompatibilityResult } from './extensions/compatibility.js';
 export { McpBridge } from './extensions/mcp-bridge.js';
 
 // Config

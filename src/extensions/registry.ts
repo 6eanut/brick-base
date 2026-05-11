@@ -12,6 +12,8 @@ import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { checkExtensionCompatibility } from './compatibility.js';
+
 export interface ExtensionManifest {
   /** Unique extension name (e.g. "repomap") */
   name: string;
@@ -19,6 +21,8 @@ export interface ExtensionManifest {
   package?: string;
   /** Semver version */
   version: string;
+  /** @default "*" — semver range that this extension requires (e.g. ">=0.1.0") */
+  brickVersion?: string;
   /** Human-readable description */
   description: string;
   /** Extension type — always "mcp" for v1 */
@@ -131,6 +135,14 @@ export class ExtensionRegistry {
             manifest.capabilities.tools ??= [];
             manifest.capabilities.commands ??= [];
             manifest.capabilities.hooks ??= [];
+
+            // Check Brick version compatibility (non-blocking warning)
+            if (manifest.brickVersion !== undefined) {
+              const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
+              if (!compatResult.compatible && compatResult.message) {
+                console.warn(`\n  ⚠  ${compatResult.message}`);
+              }
+            }
 
             this.register(manifest, join(resolvedPath, entry.name));
             discovered.push(manifest);

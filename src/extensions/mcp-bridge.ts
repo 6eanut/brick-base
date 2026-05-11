@@ -13,7 +13,8 @@
 
 import { spawn, ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { ExtensionState } from './registry.js';
+import { BRICK_VERSION } from './compatibility.js';
+import type { ExtensionState } from './registry.js';
 import { Tool, ToolResult } from '../tools/registry.js';
 
 interface MCPRequest {
@@ -98,7 +99,7 @@ export class McpBridge {
       await this.sendRequest(manifest.name, 'initialize', {
         protocolVersion: '2025-03-26',
         capabilities: {},
-        clientInfo: { name: 'brick', version: '0.1.0' },
+        clientInfo: { name: 'brick', version: BRICK_VERSION },
       });
     } catch (err) {
       proc.kill();
