@@ -15,6 +15,8 @@ import { homedir } from 'node:os';
 export interface ExtensionManifest {
   /** Unique extension name (e.g. "repomap") */
   name: string;
+  /** Optional npm package name for update resolution (e.g. "@brick/extension-web-search") */
+  package?: string;
   /** Semver version */
   version: string;
   /** Human-readable description */

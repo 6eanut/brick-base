@@ -236,6 +236,130 @@ program
     console.log(chalk.green(`\n✅ Extension "${name}" uninstalled successfully!\n`));
   });
 
+program
+  .command('update [name]')
+  .description('Update installed extensions to latest versions')
+  .option('-a, --all', 'Update all extensions')
+  .action(async (name: string | undefined, opts: { all?: boolean }) => {
+    const extParent = join(homedir(), '.brick', 'extensions');
+
+    if (!existsSync(extParent)) {
+      console.log(chalk.yellow('\nNo extensions installed.\n'));
+      return;
+    }
+
+    const { readdir, readFile } = await import('node:fs/promises');
+    const entries = await readdir(extParent, { withFileTypes: true });
+    const extNames = entries
+      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
+      .map(e => e.name);
+
+    if (extNames.length === 0) {
+      console.log(chalk.yellow('\nNo extensions installed.\n'));
+      return;
+    }
+
+    // Filter to specific extension if name provided
+    const targets = name ? extNames.filter(n => n === name) : extNames;
+    if (name && targets.length === 0) {
+      console.log(chalk.red(`\n❌ Extension "${name}" is not installed.\n`));
+      process.exit(1);
+    }
+
+    let updated = 0;
+    let skipped = 0;
+
+    for (const extName of targets) {
+      const manifestPath = join(extParent, extName, 'brick.json');
+      if (!existsSync(manifestPath)) {
+        console.log(chalk.yellow(`  ⚠  ${extName}: No brick.json found, skipping.`));
+        skipped++;
+        continue;
+      }
+
+      let manifest: { name: string; version: string; package?: string };
+      try {
+        const content = await readFile(manifestPath, 'utf-8');
+        manifest = JSON.parse(content);
+      } catch {
+        console.log(chalk.yellow(`  ⚠  ${extName}: Invalid brick.json, skipping.`));
+        skipped++;
+        continue;
+      }
+
+      const pkgName = manifest.package ?? manifest.name;
+      const currentVersion = manifest.version;
+
+      // Check npm for latest version
+      let latestVersion: string;
+      try {
+        latestVersion = execSync(
+          `npm view ${JSON.stringify(pkgName)} version`,
+          { stdio: 'pipe', timeout: 15_000, encoding: 'utf-8' },
+        ).toString().trim();
+      } catch {
+        console.log(chalk.yellow(`  ⚠  ${extName}: Cannot check npm for "${pkgName}", skipping.`));
+        skipped++;
+        continue;
+      }
+
+      if (currentVersion === latestVersion) {
+        console.log(chalk.gray(`  ${extName}: ${currentVersion} (latest) — up to date`));
+        skipped++;
+        continue;
+      }
+
+      // Update: re-install from npm
+      console.log(chalk.cyan(`  ${extName}: ${currentVersion} → ${latestVersion} (updating...)`));
+
+      const tempDir = join(extParent, `.tmp-update-${Date.now()}`);
+      await mkdir(tempDir, { recursive: true });
+
+      try {
+        execSync(`npm install ${JSON.stringify(pkgName)}`, {
+          cwd: tempDir, stdio: 'pipe', timeout: 120_000,
+        });
+
+        const pkgDir = join(tempDir, 'node_modules', pkgName);
+        const newManifestPath = join(pkgDir, 'brick.json');
+
+        if (!existsSync(newManifestPath)) {
+          throw new Error('Updated package has no brick.json');
+        }
+
+        // Remove old extension dir
+        const extDir = join(extParent, extName);
+        await rm(extDir, { recursive: true, force: true });
+
+        // Copy new version
+        await mkdir(extDir, { recursive: true });
+        await cp(pkgDir, extDir, { recursive: true });
+
+        await rm(tempDir, { recursive: true, force: true });
+
+        console.log(chalk.green(`    ✅ Updated to ${latestVersion}`));
+        updated++;
+      } catch (err) {
+        if (existsSync(tempDir)) {
+          await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+        }
+        console.log(chalk.red(`    ❌ Update failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+
+    console.log();
+    if (updated > 0) {
+      console.log(chalk.green(`✅ Updated ${updated} extension(s).`));
+    }
+    if (skipped > 0) {
+      console.log(chalk.gray(`   ${skipped} extension(s) skipped (up to date or unavailable).`));
+    }
+    if (updated === 0 && skipped === 0) {
+      console.log(chalk.yellow('   No extensions to update.'));
+    }
+    console.log();
+  });
+
 async function main(): Promise<void> {
   const opts = program.opts();
 
