@@ -299,6 +299,20 @@ export class AgentLoop {
             });
             continue;
           }
+
+          // Plan mode enforcement: block non-read-only tools
+          if (this.config.mode === AgentMode.PLAN) {
+            const toolDef = this.toolRegistry.get(tc.function.name);
+            if (!toolDef || !toolDef.readOnly) {
+              pendingTools.push({
+                tc,
+                args: {},
+                error: `Error: "${tc.function.name}" is not available in plan mode. Only read-only tools are allowed.`,
+              });
+              continue;
+            }
+          }
+
           pendingTools.push({ tc, args });
         }
 

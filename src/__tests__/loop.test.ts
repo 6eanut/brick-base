@@ -403,4 +403,101 @@ describe('AgentLoop', () => {
     // Running in plan mode should use read-only definitions
     expect(planLoop.getMode()).toBe('plan');
   });
+
+  describe('plan mode read-only enforcement', () => {
+    it('blocks non-read-only tools in plan mode', async () => {
+      const planLoop = new AgentLoop(provider, toolRegistry, {
+        config: { mode: 'plan' },
+      });
+
+      const mockChat = vi.fn()
+        .mockResolvedValueOnce({
+          content: 'Trying to write.',
+          toolCalls: [{
+            id: 'call_1',
+            type: 'function' as const,
+            function: { name: 'echo', arguments: '{"text":"malicious"}' },
+          }],
+          model: 'mock-model',
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        })
+        .mockResolvedValueOnce({
+          content: 'Blocked! I can only read.',
+          toolCalls: [],
+          model: 'mock-model',
+          usage: { promptTokens: 15, completionTokens: 5, totalTokens: 20 },
+        });
+
+      provider.chat = mockChat;
+
+      const result = await planLoop.run('Write something');
+      expect(result.turns).toBe(2);
+      expect(result.response).toBe('Blocked! I can only read.');
+    });
+
+    it('allows read-only tools in plan mode', async () => {
+      // Register a read-only tool
+      toolRegistry.register({
+        name: 'read_tool',
+        description: 'A read-only tool',
+        inputSchema: { type: 'object', properties: {} },
+        readOnly: true,
+        execute: async () => ({ success: true, output: 'read data' }),
+      });
+
+      const planLoop = new AgentLoop(provider, toolRegistry, {
+        config: { mode: 'plan' },
+      });
+
+      const mockChat = vi.fn()
+        .mockResolvedValueOnce({
+          content: 'Reading data.',
+          toolCalls: [{
+            id: 'call_1',
+            type: 'function' as const,
+            function: { name: 'read_tool', arguments: '{}' },
+          }],
+          model: 'mock-model',
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        })
+        .mockResolvedValueOnce({
+          content: 'Here is the data.',
+          toolCalls: [],
+          model: 'mock-model',
+          usage: { promptTokens: 15, completionTokens: 5, totalTokens: 20 },
+        });
+
+      provider.chat = mockChat;
+
+      const result = await planLoop.run('Read data');
+      expect(result.turns).toBe(2);
+      expect(result.response).toBe('Here is the data.');
+    });
+
+    it('allows non-read-only tools in build mode', async () => {
+      const mockChat = vi.fn()
+        .mockResolvedValueOnce({
+          content: 'Writing.',
+          toolCalls: [{
+            id: 'call_1',
+            type: 'function' as const,
+            function: { name: 'echo', arguments: '{"text":"data"}' },
+          }],
+          model: 'mock-model',
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        })
+        .mockResolvedValueOnce({
+          content: 'Done.',
+          toolCalls: [],
+          model: 'mock-model',
+          usage: { promptTokens: 15, completionTokens: 5, totalTokens: 20 },
+        });
+
+      provider.chat = mockChat;
+
+      const result = await loop.run('Write data');
+      expect(result.turns).toBe(2);
+      expect(result.response).toBe('Done.');
+    });
+  });
 });

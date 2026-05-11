@@ -51,6 +51,7 @@ export function createGitTools(options?: GitToolOptions): Tool[] {
       properties: {},
       required: [],
     },
+    readOnly: true,
     execute: () => safeRunGit(['status', '--short']),
   };
 
