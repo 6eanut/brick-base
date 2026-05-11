@@ -34,6 +34,10 @@ import { checkExtensionDependencies } from './extensions/dependencies.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
 import { ToolAnalytics } from './tools/analytics.js';
 import { ProgressRenderer } from './tui/progress.js';
+import { printBanner, printWarningBanner, type BannerConfig } from './tui/banner.js';
+import { formatHelp, formatTools, formatExtensions, formatStats, formatError, formatSuccess, formatWarning } from './tui/format.js';
+import { updateStatusBar, type StatusBarState } from './tui/status-bar.js';
+import { pagerThrough } from './tui/pager.js';
 
 /**
  * Scan the extensions directory and return a Set of installed extension names.
@@ -730,8 +734,7 @@ async function main(): Promise<void> {
   ) || providerName === 'ollama'; // Ollama is local, no key needed
 
   if (!hasApiKey) {
-    console.log(chalk.yellow('\n⚠  No API key configured. Set BRICK_API_KEY or pass --api-key.'));
-    console.log(chalk.gray('  Starting in plan mode (no LLM calls).\n'));
+    printWarningBanner('No API key configured. Set BRICK_API_KEY or pass --api-key. Starting in plan mode (no LLM calls).');
   }
 
   // ─── Tools ───────────────────────────────────────────────────────────
@@ -814,37 +817,62 @@ async function main(): Promise<void> {
   const cmdRegistry = new CommandRegistry();
   let shouldExit = false;
 
+  // Track current mode for status bar and dynamic prompt
+  let currentMode = agent.getMode();
+
   cmdRegistry.registerBuiltins({
     mode: agent.getMode(),
-    setMode: (mode) => agent.setMode(mode as AgentMode),
-    setModel: (model) => agent.setModel(model),
+    setMode: (mode) => {
+      agent.setMode(mode as AgentMode);
+      currentMode = mode as AgentMode;
+      rl.setPrompt(`brick [${currentMode}] > `);
+      updateStatusBar({
+        mode: currentMode,
+        model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+        provider: providerName,
+        toolCount: toolRegistry.listAll().length,
+      });
+    },
+    setModel: (model) => {
+      agent.setModel(model);
+      updateStatusBar({
+        mode: currentMode,
+        model,
+        provider: providerName,
+        toolCount: toolRegistry.listAll().length,
+      });
+    },
     clearConversation: () => agent.getConversation().clear(),
     listTools: () => {
       const tools = toolRegistry.listAll();
-      return tools.length > 0
-        ? `Registered tools:\n${tools.map(t => `  ${t.name} — ${t.description}`).join('\n')}`
-        : 'No tools registered.';
+      if (tools.length === 0) return 'No tools registered.';
+      return formatTools(tools.map(t => ({
+        name: t.name,
+        description: t.description,
+        source: toolRegistry.getSource(t.name),
+      })));
     },
     listExtensions: () => {
       const exts = extensionRegistry.listAll();
-      return exts.length > 0
-        ? `Installed extensions:\n${exts.map(e => {
-          const configurable = e.manifest.config && Object.keys(e.manifest.config).length > 0 ? ' (configurable)' : '';
-          return `  ${e.manifest.name} v${e.manifest.version} — ${e.manifest.description}${e.enabled ? '' : ' (disabled)'}${configurable}`;
-        }).join('\n')}`
-        : 'No extensions installed.';
+      return formatExtensions(exts.map(e => ({
+        name: e.manifest.name,
+        version: e.manifest.version,
+        description: e.manifest.description,
+        enabled: e.enabled,
+        configurable: e.manifest.config ? Object.keys(e.manifest.config).length > 0 : false,
+      })));
     },
     enableExtension: (name: string) => {
       const ext = extensionRegistry.get(name);
       if (!ext) return `Extension "${name}" is not installed.`;
       extensionRegistry.setEnabled(name, true);
-      return `Extension "${name}" enabled.`;
+      return formatSuccess(`Extension "${name}" enabled.`);
     },
     disableExtension: (name: string) => {
       const ext = extensionRegistry.get(name);
       if (!ext) return `Extension "${name}" is not installed.`;
       extensionRegistry.setEnabled(name, false);
-      return `Extension "${name}" disabled.`;
+      return formatSuccess(`Extension "${name}" disabled. Use "brick enable ${name}" to re-enable.`);
     },
     getExtensionConfig: (name: string) => {
       // Support "<ext> <key>" format for single-key lookup
@@ -872,10 +900,27 @@ async function main(): Promise<void> {
     setExtensionConfig: (name: string, key: string, value: string) => {
       const ext = extensionRegistry.get(name);
       if (!ext) return `Extension "${name}" is not installed.`;
-      return configManager.setConfig(name, key, value);
+      const result = configManager.setConfig(name, key, value);
+      return formatSuccess(result);
     },
-    getStats: () => analytics.getSummary(),
+    getStats: () => {
+      const summary = analytics.getSummary();
+      return formatStats(summary);
+    },
     exit: () => { shouldExit = true; },
+  });
+
+  // Override /help with boxen-formatted output
+  cmdRegistry.register({
+    name: 'help',
+    description: 'Show available commands',
+    execute: async () => {
+      const cmds = cmdRegistry.listAll();
+      return formatHelp(cmds.map(c => ({
+        name: `/${c.name}${c.usage ? ' ' + c.usage : ''}`,
+        description: c.description,
+      })));
+    },
   });
 
   // ─── Image command ────────────────────────────────────────────────
@@ -912,20 +957,34 @@ async function main(): Promise<void> {
   });
 
   // ─── Print banner ────────────────────────────────────────────────────
-  console.log(chalk.bold(`\n🧱 Brick — Modular AI Coding Agent v${BRICK_VERSION}`));
-  console.log(chalk.gray(`  Provider: ${providerName}`));
-  console.log(chalk.gray(`  Model: ${opts.model ?? providerCfg.defaultModel ?? 'auto'}`));
-  console.log(chalk.gray(`  Tools: ${toolRegistry.listAll().length} | Mode: ${agent.getMode()}`));
-  if (extensionRegistry.listAll().length > 0) {
-    console.log(chalk.gray(`  Extensions: ${extensionRegistry.listAll().length}`));
-  }
-  console.log(chalk.gray(`  Type /help for commands, /exit to quit\n`));
+  printBanner({
+    version: BRICK_VERSION,
+    provider: providerName,
+    model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+    tools: toolRegistry.listAll().length,
+    mode: agent.getMode(),
+    extensions: extensionRegistry.listAll().length > 0 ? extensionRegistry.listAll().length : undefined,
+  });
+
+  // ─── Initial Status Bar ──────────────────────────────────────────────
+  updateStatusBar({
+    mode: agent.getMode(),
+    model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+    provider: providerName,
+    toolCount: toolRegistry.listAll().length,
+  });
 
   // ─── REPL ────────────────────────────────────────────────────────────
   const rl = createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: 'brick> ',
+    prompt: `brick [${agent.getMode()}] > `,
+    historySize: 100,
+    completer: (line: string) => {
+      const completions = ['/help', '/clear', '/mode', '/model', '/tools', '/extensions', '/enable', '/disable', '/config', '/stats', '/exit', '/quit', '/image'];
+      const hits = completions.filter(c => c.startsWith(line));
+      return [hits.length ? hits : completions, line];
+    },
   });
 
   rl.prompt();
@@ -987,22 +1046,44 @@ async function main(): Promise<void> {
     });
 
     if (cmdResult !== null) {
-      console.log(cmdResult);
+      // Update status bar after commands that may change mode/model
+      updateStatusBar({
+        mode: currentMode,
+        model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+        provider: providerName,
+        toolCount: toolRegistry.listAll().length,
+      });
       rl.prompt();
       continue;
     }
 
     // Process as agent input
     try {
-      const result = await agent.run(input);
-      console.log(result.response);
+      // Show status bar before agent run
+      updateStatusBar({
+        mode: currentMode,
+        model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+        provider: providerName,
+        toolCount: toolRegistry.listAll().length,
+      });
 
-      if (result.toolsCalled) {
-        console.log(`  (${result.turns} turn(s), ${result.totalTokens} tokens)`);
-      }
+      const result = await agent.run(input);
+
+      // Refresh status bar with token count
+      updateStatusBar({
+        mode: currentMode,
+        model: opts.model ?? providerCfg.defaultModel ?? 'auto',
+        provider: providerName,
+        toolCount: toolRegistry.listAll().length,
+        totalTokens: result.totalTokens,
+      });
+
+      // Use pager for long responses
+      await pagerThrough(result.response);
     } catch (err) {
       progress.finish();
-      console.log(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(formatError(msg));
     }
 
     rl.prompt();

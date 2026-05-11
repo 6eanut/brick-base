@@ -107,6 +107,20 @@ export class ToolRegistry {
   }
 
   /**
+   * Get the category/source a tool was registered under.
+   * Returns "builtin" by default, or the category string (e.g. "extension:lsp").
+   */
+  getSource(toolName: string): string | undefined {
+    // Search all categories for this tool
+    for (const [category, names] of this.categorized) {
+      if (names.has(toolName)) {
+        return category;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Get tools from a specific category (e.g. "builtin", "extension:repomap").
    */
   getByCategory(category: string): Tool[] {
