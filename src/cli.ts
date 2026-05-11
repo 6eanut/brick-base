@@ -29,9 +29,29 @@ import { AgentLoop, AgentMode } from './agent/loop.js';
 import { CommandRegistry } from './commands/registry.js';
 import { ExtensionRegistry } from './extensions/registry.js';
 import { BRICK_VERSION, checkExtensionCompatibility } from './extensions/compatibility.js';
+import { checkExtensionDependencies } from './extensions/dependencies.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
 import { ToolAnalytics } from './tools/analytics.js';
 import { ProgressRenderer } from './tui/progress.js';
+
+/**
+ * Scan the extensions directory and return a Set of installed extension names.
+ */
+function getInstalledExtensionNames(extParent: string): Set<string> {
+  const names = new Set<string>();
+  if (!existsSync(extParent)) return names;
+  try {
+    const entries = require('node:fs').readdirSync(extParent, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory() && !entry.name.startsWith('.')) {
+        names.add(entry.name);
+      }
+    }
+  } catch {
+    // Ignore unreadable directories
+  }
+  return names;
+}
 
 // ─── CLI setup ──────────────────────────────────────────────────────────────
 
@@ -87,6 +107,15 @@ program
       const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
       if (!compatResult.compatible && compatResult.message) {
         console.log(chalk.yellow(`  ⚠  ${compatResult.message}`));
+      }
+
+      // Check extension dependencies (non-blocking warning)
+      const installedNames = getInstalledExtensionNames(extParent);
+      const depResult = checkExtensionDependencies(manifest, installedNames);
+      if (!depResult.satisfied) {
+        for (const dep of depResult.missing) {
+          console.log(chalk.yellow(`  ⚠  Extension "${manifest.name}" requires "${dep}" — not installed`));
+        }
       }
 
       const extDir = join(extParent, manifest.name);
@@ -155,6 +184,15 @@ program
         console.log(chalk.yellow(`  ⚠  ${npmCompatResult.message}`));
       }
 
+      // Check extension dependencies (non-blocking warning)
+      const npmInstalledNames = getInstalledExtensionNames(extParent);
+      const npmDepResult = checkExtensionDependencies(npmManifest, npmInstalledNames);
+      if (!npmDepResult.satisfied) {
+        for (const dep of npmDepResult.missing) {
+          console.log(chalk.yellow(`  ⚠  Extension "${npmManifest.name}" requires "${dep}" — not installed`));
+        }
+      }
+
       const extDir = join(extParent, npmManifest.name);
 
       if (existsSync(extDir)) {
@@ -199,12 +237,18 @@ program
     }
 
     console.log(chalk.bold('\nInstalled Extensions:\n'));
+
+    // Collect all manifests for cross-dependency checking
+    const allManifests: Array<{ name: string; requires?: string[] }> = [];
+
     for (const name of extNames) {
       const manifestPath = join(extDir, name, 'brick.json');
       if (!existsSync(manifestPath)) continue;
       try {
         const content = await readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(content) as { name: string; version: string; description?: string; brickVersion?: string };
+        const manifest = JSON.parse(content) as { name: string; version: string; description?: string; brickVersion?: string; requires?: string[] };
+
+        allManifests.push(manifest);
 
         // Check compatibility
         const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
@@ -219,6 +263,18 @@ program
         // Skip invalid manifests
       }
     }
+
+    // Show dependency warnings for manifests with missing dependencies
+    const installedSet = new Set(allManifests.map(m => m.name));
+    for (const m of allManifests) {
+      if (!m.requires) continue;
+      const missing = m.requires.filter(d => d !== m.name && !installedSet.has(d));
+      if (missing.length > 0) {
+        console.log(`    ${chalk.yellow('⚠ missing deps: ' + missing.join(', '))}`);
+      }
+    }
+
+    console.log();
   });
 
 program
@@ -347,10 +403,22 @@ program
 
         // Check compatibility of the new version
         const newManifestRaw = await readFile(newManifestPath, 'utf-8');
-        const newManifest = JSON.parse(newManifestRaw) as { brickVersion?: string };
+        const newManifest = JSON.parse(newManifestRaw) as { brickVersion?: string; requires?: string[] };
         const updateCompatResult = checkExtensionCompatibility(newManifest.brickVersion, extName);
         if (!updateCompatResult.compatible && updateCompatResult.message) {
           console.log(chalk.yellow(`  ⚠  ${updateCompatResult.message}`));
+        }
+
+        // Check dependencies of the new version
+        const updateInstalledNames = getInstalledExtensionNames(extParent);
+        const updateDepResult = checkExtensionDependencies(
+          { name: extName, requires: newManifest.requires },
+          updateInstalledNames,
+        );
+        if (!updateDepResult.satisfied) {
+          for (const dep of updateDepResult.missing) {
+            console.log(chalk.yellow(`  ⚠  Extension "${extName}" requires "${dep}" — not installed`));
+          }
         }
 
         // Remove old extension dir

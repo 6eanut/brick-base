@@ -13,6 +13,7 @@ import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 
 import { checkExtensionCompatibility } from './compatibility.js';
+import { aggregateDependencyWarnings } from './dependencies.js';
 
 export interface ExtensionManifest {
   /** Unique extension name (e.g. "repomap") */
@@ -23,6 +24,8 @@ export interface ExtensionManifest {
   version: string;
   /** @default "*" — semver range that this extension requires (e.g. ">=0.1.0") */
   brickVersion?: string;
+  /** Names of other Brick extensions this extension depends on */
+  requires?: string[];
   /** Human-readable description */
   description: string;
   /** Extension type — always "mcp" for v1 */
@@ -153,6 +156,12 @@ export class ExtensionRegistry {
       } catch {
         // Skip unreadable directories
       }
+    }
+
+    // Check cross-extension dependencies (non-blocking warning)
+    const depWarnings = aggregateDependencyWarnings(discovered);
+    for (const warning of depWarnings) {
+      console.warn(`\n  ⚠  ${warning}`);
     }
 
     return discovered;
