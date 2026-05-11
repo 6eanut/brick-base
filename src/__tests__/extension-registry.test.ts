@@ -9,11 +9,13 @@ import { ExtensionRegistry } from '../extensions/registry.js';
 
 const mockReadFile = vi.hoisted(() => vi.fn());
 const mockReaddir = vi.hoisted(() => vi.fn());
+const mockWriteFile = vi.hoisted(() => vi.fn());
 const mockExistsSync = vi.hoisted(() => vi.fn());
 
 vi.mock('node:fs/promises', () => ({
   readFile: mockReadFile,
   readdir: mockReaddir,
+  writeFile: mockWriteFile,
 }));
 
 vi.mock('node:fs', () => ({
@@ -244,6 +246,92 @@ describe('ExtensionRegistry', () => {
       registry.setEnabled('a', false);
 
       expect(registry.getAllExtensionToolNames()).toEqual([]);
+    });
+  });
+
+  describe('persistence (loadState / saveState)', () => {
+    it('loads enabled state from state file on construction', async () => {
+      mockExistsSync.mockImplementation((p: string) => {
+        if (p.endsWith('extensions-state.json')) return true;
+        return false;
+      });
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        'repomap': true,
+        'web-search': false,
+      }));
+
+      const reg = new ExtensionRegistry([]);
+      // Wait for loadState to complete
+      await new Promise(process.nextTick);
+
+      reg.register({
+        name: 'repomap', version: '1.0.0', description: '', type: 'mcp',
+        mcp: { command: 'n', args: [] },
+        capabilities: { tools: [], commands: [], hooks: [] },
+      }, '/ext/repomap');
+      reg.register({
+        name: 'web-search', version: '1.0.0', description: '', type: 'mcp',
+        mcp: { command: 'n', args: [] },
+        capabilities: { tools: [], commands: [], hooks: [] },
+      }, '/ext/web-search');
+
+      expect(reg.get('repomap')!.enabled).toBe(true);
+      expect(reg.get('web-search')!.enabled).toBe(false);
+    });
+
+    it('defaults to enabled when state file does not exist', async () => {
+      mockExistsSync.mockReturnValue(false);
+
+      const reg = new ExtensionRegistry([]);
+      await new Promise(process.nextTick);
+
+      reg.register({
+        name: 'test', version: '1.0.0', description: '', type: 'mcp',
+        mcp: { command: 't', args: [] },
+        capabilities: { tools: [], commands: [], hooks: [] },
+      }, '/ext/test');
+
+      expect(reg.get('test')!.enabled).toBe(true);
+    });
+
+    it('setEnabled saves state via writeFile', async () => {
+      mockExistsSync.mockReturnValue(false);
+
+      const reg = new ExtensionRegistry([]);
+      await new Promise(process.nextTick);
+
+      reg.register({
+        name: 'test', version: '1.0.0', description: '', type: 'mcp',
+        mcp: { command: 't', args: [] },
+        capabilities: { tools: [], commands: [], hooks: [] },
+      }, '/ext/test');
+
+      mockWriteFile.mockClear();
+      reg.setEnabled('test', false);
+
+      // Give saveState time to execute
+      await new Promise(process.nextTick);
+
+      expect(mockWriteFile).toHaveBeenCalledTimes(1);
+      const callArgs = mockWriteFile.mock.calls[0];
+      expect(callArgs[0]).toContain('extensions-state.json');
+      expect(callArgs[1]).toContain('"test": false');
+    });
+
+    it('ignores invalid state file silently', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFile.mockRejectedValue(new Error('parse error'));
+
+      const reg = new ExtensionRegistry([]);
+      await new Promise(process.nextTick);
+
+      reg.register({
+        name: 'test', version: '1.0.0', description: '', type: 'mcp',
+        mcp: { command: 't', args: [] },
+        capabilities: { tools: [], commands: [], hooks: [] },
+      }, '/ext/test');
+
+      expect(reg.get('test')!.enabled).toBe(true);
     });
   });
 });

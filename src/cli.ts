@@ -454,6 +454,70 @@ program
     console.log();
   });
 
+/**
+ * Load the extension state map from ~/.brick/extensions-state.json.
+ * Returns an empty map if the file doesn't exist or is invalid.
+ */
+function loadExtensionState(): Map<string, boolean> {
+  const stateFile = join(homedir(), '.brick', 'extensions-state.json');
+  const map = new Map<string, boolean>();
+  if (!existsSync(stateFile)) return map;
+  try {
+    const content = require('node:fs').readFileSync(stateFile, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, boolean>;
+    for (const [name, enabled] of Object.entries(parsed)) {
+      map.set(name, enabled);
+    }
+  } catch {
+    // Ignore invalid state files
+  }
+  return map;
+}
+
+/**
+ * Save the extension state map to ~/.brick/extensions-state.json.
+ */
+function saveExtensionState(state: Map<string, boolean>): void {
+  const stateFile = join(homedir(), '.brick', 'extensions-state.json');
+  const obj: Record<string, boolean> = {};
+  for (const [name, enabled] of state) {
+    obj[name] = enabled;
+  }
+  require('node:fs').writeFileSync(stateFile, JSON.stringify(obj, null, 2), 'utf-8');
+}
+
+program
+  .command('enable <name>')
+  .description('Enable a disabled extension')
+  .action(async (name: string) => {
+    const extDir = join(homedir(), '.brick', 'extensions', name);
+    if (!existsSync(extDir)) {
+      console.log(chalk.red(`\n❌ Extension "${name}" is not installed.\n`));
+      process.exit(1);
+    }
+
+    const state = loadExtensionState();
+    state.set(name, true);
+    saveExtensionState(state);
+    console.log(chalk.green(`\n✅ Extension "${name}" enabled.\n`));
+  });
+
+program
+  .command('disable <name>')
+  .description('Disable an installed extension')
+  .action(async (name: string) => {
+    const extDir = join(homedir(), '.brick', 'extensions', name);
+    if (!existsSync(extDir)) {
+      console.log(chalk.red(`\n❌ Extension "${name}" is not installed.\n`));
+      process.exit(1);
+    }
+
+    const state = loadExtensionState();
+    state.set(name, false);
+    saveExtensionState(state);
+    console.log(chalk.yellow(`\n✅ Extension "${name}" disabled (use "brick enable ${name}" to re-enable).\n`));
+  });
+
 async function main(): Promise<void> {
   const opts = program.opts();
 
@@ -614,6 +678,18 @@ async function main(): Promise<void> {
         ? `Installed extensions:\n${exts.map(e => `  ${e.manifest.name} v${e.manifest.version} — ${e.manifest.description}${e.enabled ? '' : ' (disabled)'}`).join('\n')}`
         : 'No extensions installed.';
     },
+    enableExtension: (name: string) => {
+      const ext = extensionRegistry.get(name);
+      if (!ext) return `Extension "${name}" is not installed.`;
+      extensionRegistry.setEnabled(name, true);
+      return `Extension "${name}" enabled.`;
+    },
+    disableExtension: (name: string) => {
+      const ext = extensionRegistry.get(name);
+      if (!ext) return `Extension "${name}" is not installed.`;
+      extensionRegistry.setEnabled(name, false);
+      return `Extension "${name}" disabled.`;
+    },
     getStats: () => analytics.getSummary(),
     exit: () => { shouldExit = true; },
   });
@@ -687,6 +763,18 @@ async function main(): Promise<void> {
       clearConversation: () => agent.getConversation().clear(),
       listTools: () => toolRegistry.listAll().map(t => `  ${t.name}`).join('\n'),
       listExtensions: () => extensionRegistry.listAll().map(e => `  ${e.manifest.name}`).join('\n'),
+      enableExtension: (name: string) => {
+        const ext = extensionRegistry.get(name);
+        if (!ext) return `Extension "${name}" is not installed.`;
+        extensionRegistry.setEnabled(name, true);
+        return `Extension "${name}" enabled.`;
+      },
+      disableExtension: (name: string) => {
+        const ext = extensionRegistry.get(name);
+        if (!ext) return `Extension "${name}" is not installed.`;
+        extensionRegistry.setEnabled(name, false);
+        return `Extension "${name}" disabled.`;
+      },
       getStats: () => analytics.getSummary(),
       exit: () => { shouldExit = true; },
     });

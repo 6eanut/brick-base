@@ -32,6 +32,10 @@ export interface CommandContext {
   listExtensions: () => string;
   /** Get tool usage analytics summary */
   getStats?: () => string;
+  /** Enable an extension by name */
+  enableExtension?: (name: string) => string;
+  /** Disable an extension by name */
+  disableExtension?: (name: string) => string;
   /** Exit the application */
   exit: () => void;
 }
@@ -143,6 +147,36 @@ export class CommandRegistry {
       description: 'List installed extensions',
       execute: async () => {
         return ctx.listExtensions();
+      },
+    });
+
+    this.register({
+      name: 'enable',
+      description: 'Enable a disabled extension',
+      usage: '<name>',
+      execute: async (args) => {
+        if (!args[0]) {
+          return 'Usage: /enable <extension-name>';
+        }
+        if (!ctx.enableExtension) {
+          return 'Enable/disable not available in this context.';
+        }
+        return ctx.enableExtension(args[0]);
+      },
+    });
+
+    this.register({
+      name: 'disable',
+      description: 'Disable an installed extension',
+      usage: '<name>',
+      execute: async (args) => {
+        if (!args[0]) {
+          return 'Usage: /disable <extension-name>';
+        }
+        if (!ctx.disableExtension) {
+          return 'Enable/disable not available in this context.';
+        }
+        return ctx.disableExtension(args[0]);
       },
     });
 

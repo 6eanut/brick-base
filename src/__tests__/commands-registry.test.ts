@@ -165,4 +165,42 @@ describe('CommandRegistry', () => {
     expect(result).toContain('Tool Usage Stats');
     expect(result).toContain('read_file');
   });
+
+  it('built-in /enable without name shows usage', async () => {
+    registry.registerBuiltins(createContext());
+    const result = await registry.tryExecute('/enable', createContext());
+    expect(result).toContain('Usage');
+  });
+
+  it('built-in /enable calls enableExtension callback', async () => {
+    let enabledExt = '';
+    const ctx = createContext();
+    ctx.enableExtension = (name: string) => { enabledExt = name; return `Extension "${name}" enabled.`; };
+    registry.registerBuiltins(ctx);
+    await registry.tryExecute('/enable repomap', ctx);
+    expect(enabledExt).toBe('repomap');
+  });
+
+  it('built-in /disable without name shows usage', async () => {
+    registry.registerBuiltins(createContext());
+    const result = await registry.tryExecute('/disable', createContext());
+    expect(result).toContain('Usage');
+  });
+
+  it('built-in /disable calls disableExtension callback', async () => {
+    let disabledExt = '';
+    const ctx = createContext();
+    ctx.disableExtension = (name: string) => { disabledExt = name; return `Extension "${name}" disabled.`; };
+    registry.registerBuiltins(ctx);
+    await registry.tryExecute('/disable repomap', ctx);
+    expect(disabledExt).toBe('repomap');
+  });
+
+  it('built-in /enable shows not-available message when callback missing', async () => {
+    const ctx = createContext();
+    ctx.enableExtension = undefined;
+    registry.registerBuiltins(ctx);
+    const result = await registry.tryExecute('/enable repomap', ctx);
+    expect(result).toContain('not available');
+  });
 });

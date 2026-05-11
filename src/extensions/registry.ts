@@ -7,13 +7,16 @@
  * - Lifecycle: install, uninstall, enable, disable
  */
 
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 
 import { checkExtensionCompatibility } from './compatibility.js';
 import { aggregateDependencyWarnings } from './dependencies.js';
+
+/** Path to the persisted extension state file. */
+const STATE_FILE = join(homedir(), '.brick', 'extensions-state.json');
 
 export interface ExtensionManifest {
   /** Unique extension name (e.g. "repomap") */
@@ -63,6 +66,8 @@ export interface ExtensionState {
 export class ExtensionRegistry {
   private extensions: Map<string, ExtensionState> = new Map();
   private searchPaths: string[];
+  /** Persisted enabled/disabled state, loaded from STATE_FILE */
+  private enabledState: Map<string, boolean> = new Map();
 
   constructor(searchPaths: string[] = []) {
     this.searchPaths = [
@@ -70,6 +75,43 @@ export class ExtensionRegistry {
       join(homedir(), '.brick', 'extensions'),
       join(process.cwd(), 'extensions'),
     ];
+    this.loadState().catch(() => {});
+  }
+
+  /**
+   * Persist the enabled/disabled state to disk.
+   */
+  private async saveState(): Promise<void> {
+    const state: Record<string, boolean> = {};
+    for (const [name, enabled] of this.enabledState) {
+      state[name] = enabled;
+    }
+    await writeFile(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  }
+
+  /**
+   * Load the enabled/disabled state from disk.
+   * Missing entries default to enabled: true.
+   */
+  private async loadState(): Promise<void> {
+    if (!existsSync(STATE_FILE)) return;
+    try {
+      const content = await readFile(STATE_FILE, 'utf-8');
+      const state = JSON.parse(content) as Record<string, boolean>;
+      for (const [name, enabled] of Object.entries(state)) {
+        this.enabledState.set(name, enabled);
+      }
+    } catch {
+      // Ignore invalid state files
+    }
+  }
+
+  /**
+   * Get the persisted enabled state for an extension.
+   * Defaults to true if not explicitly set.
+   */
+  private getPersistedEnabled(name: string): boolean {
+    return this.enabledState.has(name) ? this.enabledState.get(name)! : true;
   }
 
   /**
@@ -79,7 +121,7 @@ export class ExtensionRegistry {
     this.extensions.set(manifest.name, {
       manifest,
       path: extPath,
-      enabled: true,
+      enabled: this.getPersistedEnabled(manifest.name),
       installedAt: new Date().toISOString(),
     });
   }
@@ -107,6 +149,8 @@ export class ExtensionRegistry {
     const ext = this.extensions.get(name);
     if (!ext) return false;
     ext.enabled = enabled;
+    this.enabledState.set(name, enabled);
+    this.saveState().catch(() => {});
     return true;
   }
 
