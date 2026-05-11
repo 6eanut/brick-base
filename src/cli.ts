@@ -28,6 +28,7 @@ import { createGitTools } from './tools/git.js';
 import { AgentLoop, AgentMode } from './agent/loop.js';
 import { CommandRegistry } from './commands/registry.js';
 import { ExtensionRegistry } from './extensions/registry.js';
+import { ExtensionConfigManager } from './extensions/config.js';
 import { BRICK_VERSION, checkExtensionCompatibility } from './extensions/compatibility.js';
 import { checkExtensionDependencies } from './extensions/dependencies.js';
 import { McpBridge } from './extensions/mcp-bridge.js';
@@ -246,15 +247,16 @@ program
       if (!existsSync(manifestPath)) continue;
       try {
         const content = await readFile(manifestPath, 'utf-8');
-        const manifest = JSON.parse(content) as { name: string; version: string; description?: string; brickVersion?: string; requires?: string[] };
+        const manifest = JSON.parse(content) as { name: string; version: string; description?: string; brickVersion?: string; requires?: string[]; config?: Record<string, unknown> };
 
         allManifests.push(manifest);
 
         // Check compatibility
         const compatResult = checkExtensionCompatibility(manifest.brickVersion, manifest.name);
         const compatFlag = compatResult.compatible ? '' : chalk.yellow(' ⚠');
+        const configTag = manifest.config && Object.keys(manifest.config).length > 0 ? chalk.gray(' (configurable)') : '';
 
-        console.log(`  ${chalk.cyan(manifest.name)} v${manifest.version}${compatFlag}`);
+        console.log(`  ${chalk.cyan(manifest.name)} v${manifest.version}${compatFlag}${configTag}`);
         if (manifest.description) {
           console.log(`    ${chalk.gray(manifest.description)}`);
         }
@@ -518,6 +520,155 @@ program
     console.log(chalk.yellow(`\n✅ Extension "${name}" disabled (use "brick enable ${name}" to re-enable).\n`));
   });
 
+/**
+ * Load the extension config map from ~/.brick/extensions-config.json.
+ */
+function loadExtensionConfigs(): Map<string, Record<string, unknown>> {
+  const configFile = join(homedir(), '.brick', 'extensions-config.json');
+  const map = new Map<string, Record<string, unknown>>();
+  if (!existsSync(configFile)) return map;
+  try {
+    const content = require('node:fs').readFileSync(configFile, 'utf-8');
+    const parsed = JSON.parse(content) as Record<string, Record<string, unknown>>;
+    for (const [name, cfg] of Object.entries(parsed)) {
+      map.set(name, cfg);
+    }
+  } catch {
+    // Ignore invalid config files
+  }
+  return map;
+}
+
+/**
+ * Save the extension config map to ~/.brick/extensions-config.json.
+ */
+function saveExtensionConfigs(configs: Map<string, Record<string, unknown>>): void {
+  const configFile = join(homedir(), '.brick', 'extensions-config.json');
+  const obj: Record<string, Record<string, unknown>> = {};
+  for (const [name, cfg] of configs) {
+    obj[name] = cfg;
+  }
+  require('node:fs').writeFileSync(configFile, JSON.stringify(obj, null, 2), 'utf-8');
+}
+
+/**
+ * Coerce a string value to a target type for extension config.
+ */
+function coerceConfigValue(value: string, type: string): unknown {
+  switch (type) {
+    case 'number': {
+      const n = Number(value);
+      return Number.isNaN(n) ? value : n;
+    }
+    case 'boolean':
+      return value === 'true' || value === '1' || value === 'yes';
+    case 'select':
+    case 'string':
+    default:
+      return value;
+  }
+}
+
+program
+  .command('config <extension> [key] [value]')
+  .description('View or set extension configuration')
+  .action(async (extension: string, key?: string, value?: string) => {
+    const extDir = join(homedir(), '.brick', 'extensions', extension);
+    const manifestPath = join(extDir, 'brick.json');
+
+    if (!existsSync(extDir) || !existsSync(manifestPath)) {
+      console.log(chalk.red(`\n❌ Extension "${extension}" is not installed.\n`));
+      process.exit(1);
+    }
+
+    // Read manifest for config schema
+    let manifest: { config?: Record<string, any> };
+    try {
+      manifest = JSON.parse(require('node:fs').readFileSync(manifestPath, 'utf-8'));
+    } catch {
+      console.log(chalk.red(`\n❌ Invalid brick.json for "${extension}".\n`));
+      process.exit(1);
+    }
+
+    const schema = manifest.config;
+    if (!schema || Object.keys(schema).length === 0) {
+      console.log(chalk.yellow(`\n  Extension "${extension}" has no configurable settings.\n`));
+      return;
+    }
+
+    // Load user overrides
+    const allConfigs = loadExtensionConfigs();
+    const userOverrides = allConfigs.get(extension) ?? {};
+
+    // Mode: set config key
+    if (key !== undefined && value !== undefined) {
+      const entry = schema[key];
+      if (!entry) {
+        console.log(chalk.red(`\n  Unknown config key "${key}". Available: ${Object.keys(schema).join(', ')}\n`));
+        process.exit(1);
+      }
+
+      const coerced = coerceConfigValue(value, entry.type);
+      if (entry.type === 'select' && entry.options && !entry.options.includes(String(coerced))) {
+        console.log(chalk.red(`\n  Invalid value for "${key}". Allowed: ${entry.options.join(', ')}\n`));
+        process.exit(1);
+      }
+
+      userOverrides[key] = coerced;
+      allConfigs.set(extension, userOverrides);
+      saveExtensionConfigs(allConfigs);
+      console.log(chalk.green(`\n✅ ${extension}: ${key} set to ${JSON.stringify(coerced)}\n`));
+      return;
+    }
+
+    // Mode: show single key
+    if (key !== undefined) {
+      const entry = schema[key];
+      if (!entry) {
+        console.log(chalk.red(`\n  Unknown config key "${key}". Available: ${Object.keys(schema).join(', ')}\n`));
+        process.exit(1);
+      }
+
+      const effective = userOverrides[key] ?? entry.default ?? null;
+      const isOverridden = key in userOverrides;
+      const label = entry.label ?? key;
+      console.log(chalk.bold(`\n${label}`));
+      console.log(`  ${chalk.gray(entry.description)}`);
+      console.log(`  type: ${entry.type}`);
+      if (entry.options) console.log(`  options: ${entry.options.join(', ')}`);
+      console.log(`  default: ${JSON.stringify(entry.default)}`);
+      console.log(`  current: ${isOverridden ? chalk.green(JSON.stringify(effective)) : JSON.stringify(effective)}`);
+      console.log();
+      return;
+    }
+
+    // Mode: show all config
+    console.log(chalk.bold(`\nConfiguration for "${extension}":\n`));
+    for (const [k, entry] of Object.entries(schema)) {
+      const effective = userOverrides[k] ?? entry.default ?? null;
+      const isOverridden = k in userOverrides;
+      const label = entry.label ?? k;
+      const formattedValue = effective === null ? '(not set)' : JSON.stringify(effective);
+
+      let typeTag: string;
+      if (entry.type === 'select') {
+        typeTag = `[${entry.options?.join('|')}]`;
+      } else {
+        typeTag = entry.type;
+      }
+
+      const marker = isOverridden ? chalk.green('*') : ' ';
+      const val = isOverridden ? chalk.green(formattedValue) : formattedValue;
+      console.log(`  ${marker} ${chalk.cyan(label)} (${typeTag}) = ${val}`);
+      console.log(`    ${chalk.gray(entry.description)}`);
+      if (entry.default !== undefined) {
+        console.log(`    default: ${JSON.stringify(entry.default)}`);
+      }
+      console.log();
+    }
+    console.log(chalk.gray('  * = overridden from default\n'));
+  });
+
 async function main(): Promise<void> {
   const opts = program.opts();
 
@@ -605,6 +756,7 @@ async function main(): Promise<void> {
 
   // ─── Extensions ──────────────────────────────────────────────────────
   const extensionRegistry = new ExtensionRegistry(config.get('extensionPaths'));
+  const configManager = new ExtensionConfigManager(() => extensionRegistry);
   const mcpBridge = new McpBridge();
 
   if (opts.extensions !== false) {
@@ -614,7 +766,8 @@ async function main(): Promise<void> {
 
       for (const ext of extensionRegistry.listEnabled()) {
         try {
-          const extTools = await mcpBridge.connect(ext);
+          const cfgEnv = configManager.getConfigAsEnv(ext.manifest.name);
+          const extTools = await mcpBridge.connect(ext, cfgEnv);
           for (const tool of extTools) {
             toolRegistry.register(tool, `extension:${ext.manifest.name}`);
           }
@@ -675,7 +828,10 @@ async function main(): Promise<void> {
     listExtensions: () => {
       const exts = extensionRegistry.listAll();
       return exts.length > 0
-        ? `Installed extensions:\n${exts.map(e => `  ${e.manifest.name} v${e.manifest.version} — ${e.manifest.description}${e.enabled ? '' : ' (disabled)'}`).join('\n')}`
+        ? `Installed extensions:\n${exts.map(e => {
+          const configurable = e.manifest.config && Object.keys(e.manifest.config).length > 0 ? ' (configurable)' : '';
+          return `  ${e.manifest.name} v${e.manifest.version} — ${e.manifest.description}${e.enabled ? '' : ' (disabled)'}${configurable}`;
+        }).join('\n')}`
         : 'No extensions installed.';
     },
     enableExtension: (name: string) => {
@@ -689,6 +845,34 @@ async function main(): Promise<void> {
       if (!ext) return `Extension "${name}" is not installed.`;
       extensionRegistry.setEnabled(name, false);
       return `Extension "${name}" disabled.`;
+    },
+    getExtensionConfig: (name: string) => {
+      // Support "<ext> <key>" format for single-key lookup
+      const parts = name.split(' ');
+      const extName = parts[0];
+      const keyName = parts[1];
+
+      const ext = extensionRegistry.get(extName);
+      if (!ext) return `Extension "${extName}" is not installed.`;
+
+      if (keyName) {
+        const schema = ext.manifest.config?.[keyName];
+        if (!schema) return `Unknown config key "${keyName}".`;
+        const config = configManager.getConfig(extName);
+        const effective = config[keyName] ?? schema.default ?? null;
+        let result = `${schema.label ?? keyName}: ${JSON.stringify(effective)}`;
+        result += `\n  ${schema.description}`;
+        result += `\n  type: ${schema.type}`;
+        result += `\n  default: ${JSON.stringify(schema.default)}`;
+        return result;
+      }
+
+      return configManager.formatConfig(extName);
+    },
+    setExtensionConfig: (name: string, key: string, value: string) => {
+      const ext = extensionRegistry.get(name);
+      if (!ext) return `Extension "${name}" is not installed.`;
+      return configManager.setConfig(name, key, value);
     },
     getStats: () => analytics.getSummary(),
     exit: () => { shouldExit = true; },
@@ -774,6 +958,29 @@ async function main(): Promise<void> {
         if (!ext) return `Extension "${name}" is not installed.`;
         extensionRegistry.setEnabled(name, false);
         return `Extension "${name}" disabled.`;
+      },
+      getExtensionConfig: (name: string) => {
+        const parts = name.split(' ');
+        const extName = parts[0];
+        const keyName = parts[1];
+        const ext = extensionRegistry.get(extName);
+        if (!ext) return `Extension "${extName}" is not installed.`;
+        if (keyName) {
+          const schema = ext.manifest.config?.[keyName];
+          if (!schema) return `Unknown config key "${keyName}".`;
+          const config = configManager.getConfig(extName);
+          const effective = config[keyName] ?? schema.default ?? null;
+          let result = `${schema.label ?? keyName}: ${JSON.stringify(effective)}`;
+          result += `\n  ${schema.description}`;
+          result += `\n  default: ${JSON.stringify(schema.default)}`;
+          return result;
+        }
+        return configManager.formatConfig(extName);
+      },
+      setExtensionConfig: (name: string, key: string, value: string) => {
+        const ext = extensionRegistry.get(name);
+        if (!ext) return `Extension "${name}" is not installed.`;
+        return configManager.setConfig(name, key, value);
       },
       getStats: () => analytics.getSummary(),
       exit: () => { shouldExit = true; },

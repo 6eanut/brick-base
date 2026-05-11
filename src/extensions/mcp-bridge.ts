@@ -44,12 +44,16 @@ export class McpBridge {
 
   /**
    * Start an MCP server for an extension and return the tools it exposes.
+   *
+   * @param extension - The extension state to connect
+   * @param extraEnv - Optional extra environment variables to inject (e.g. BRICK_CFG_*)
    */
-  async connect(extension: ExtensionState): Promise<Tool[]> {
+  async connect(extension: ExtensionState, extraEnv?: Record<string, string>): Promise<Tool[]> {
     const manifest = extension.manifest;
     const env: Record<string, string | undefined> = {
       ...process.env,
       ...manifest.mcp.env,
+      ...extraEnv,
     };
 
     const proc = spawn(manifest.mcp.command, manifest.mcp.args, {

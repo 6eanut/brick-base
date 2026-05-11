@@ -18,6 +18,21 @@ import { aggregateDependencyWarnings } from './dependencies.js';
 /** Path to the persisted extension state file. */
 const STATE_FILE = join(homedir(), '.brick', 'extensions-state.json');
 
+export interface ConfigSchemaEntry {
+  /** Value type */
+  type: 'string' | 'number' | 'boolean' | 'select';
+  /** Human-readable description of what this setting does */
+  description: string;
+  /** Default value if user hasn't set one */
+  default?: unknown;
+  /** Allowed options for 'select' type */
+  options?: string[];
+  /** Human-readable label (shown in CLI display) */
+  label?: string;
+  /** Whether this setting must be provided (default false) */
+  required?: boolean;
+}
+
 export interface ExtensionManifest {
   /** Unique extension name (e.g. "repomap") */
   name: string;
@@ -51,6 +66,8 @@ export interface ExtensionManifest {
     /** Event hooks this extension supports */
     hooks: string[];
   };
+  /** Declared configuration schema — what settings this extension accepts */
+  config?: Record<string, ConfigSchemaEntry>;
 }
 
 export interface ExtensionState {

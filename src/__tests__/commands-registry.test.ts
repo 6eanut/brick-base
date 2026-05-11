@@ -203,4 +203,41 @@ describe('CommandRegistry', () => {
     const result = await registry.tryExecute('/enable repomap', ctx);
     expect(result).toContain('not available');
   });
+
+  it('built-in /config without args shows usage', async () => {
+    registry.registerBuiltins(createContext());
+    const result = await registry.tryExecute('/config', createContext());
+    expect(result).toContain('Usage');
+  });
+
+  it('built-in /config with ext calls getExtensionConfig', async () => {
+    let calledWith = '';
+    const ctx = createContext();
+    ctx.getExtensionConfig = (name: string) => { calledWith = name; return 'config data'; };
+    registry.registerBuiltins(ctx);
+    await registry.tryExecute('/config web-search', ctx);
+    expect(calledWith).toBe('web-search');
+  });
+
+  it('built-in /config with ext key value calls setExtensionConfig', async () => {
+    let setName = '', setKey = '', setVal = '';
+    const ctx = createContext();
+    ctx.setExtensionConfig = (name: string, key: string, value: string) => {
+      setName = name; setKey = key; setVal = value; return 'ok';
+    };
+    registry.registerBuiltins(ctx);
+    await registry.tryExecute('/config web-search maxResults 10', ctx);
+    expect(setName).toBe('web-search');
+    expect(setKey).toBe('maxResults');
+    expect(setVal).toBe('10');
+  });
+
+  it('built-in /config shows not-available when callbacks missing', async () => {
+    const ctx = createContext();
+    ctx.getExtensionConfig = undefined;
+    ctx.setExtensionConfig = undefined;
+    registry.registerBuiltins(ctx);
+    const result = await registry.tryExecute('/config web-search', ctx);
+    expect(result).toContain('not available');
+  });
 });

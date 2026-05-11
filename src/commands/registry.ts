@@ -36,6 +36,10 @@ export interface CommandContext {
   enableExtension?: (name: string) => string;
   /** Disable an extension by name */
   disableExtension?: (name: string) => string;
+  /** Get formatted extension config */
+  getExtensionConfig?: (name: string) => string;
+  /** Set an extension config key */
+  setExtensionConfig?: (name: string, key: string, value: string) => string;
   /** Exit the application */
   exit: () => void;
 }
@@ -177,6 +181,34 @@ export class CommandRegistry {
           return 'Enable/disable not available in this context.';
         }
         return ctx.disableExtension(args[0]);
+      },
+    });
+
+    this.register({
+      name: 'config',
+      description: 'View or set extension configuration',
+      usage: '<extension> [key] [value]',
+      execute: async (args) => {
+        if (!args[0]) {
+          return 'Usage: /config <extension> [key] [value]';
+        }
+        if (args.length >= 3) {
+          if (!ctx.setExtensionConfig) {
+            return 'Config not available in this context.';
+          }
+          return ctx.setExtensionConfig(args[0], args[1], args[2]);
+        }
+        if (args.length === 2) {
+          // Show single key — handled by getExtensionConfig with key filter
+          if (!ctx.getExtensionConfig) {
+            return 'Config not available in this context.';
+          }
+          return ctx.getExtensionConfig(args[0] + ' ' + args[1]);
+        }
+        if (!ctx.getExtensionConfig) {
+          return 'Config not available in this context.';
+        }
+        return ctx.getExtensionConfig(args[0]);
       },
     });
 
