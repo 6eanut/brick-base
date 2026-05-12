@@ -7,6 +7,11 @@
 
 import { parseSseStream } from './sse-parser.js';
 
+/** Strips trailing slashes to prevent double-slash when joining with API paths. */
+function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, '');
+}
+
 export interface ProviderCapabilities {
   /** Maximum context window size in tokens */
   maxTokens: number;
@@ -61,6 +66,8 @@ export interface LLMMessage {
   content: string;
   toolCallId?: string;
   toolName?: string;
+  /** Tool calls made by the assistant (only on role='assistant' messages) */
+  toolCalls?: ToolCallRequest[];
   /** Optional image attachments (for vision-capable providers) */
   images?: MessageImage[];
 }
@@ -151,6 +158,18 @@ export class LLMProvider implements Provider {
           msg.tool_call_id = m.toolCallId;
         }
 
+        // Include tool_calls on assistant messages for tool round-trip
+        if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+          msg.tool_calls = m.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            },
+          }));
+        }
+
         // Handle vision/multimodal: when images are present, content becomes
         // an array of text + image_url parts (OpenAI format).
         // See: https://platform.openai.com/docs/guides/vision
@@ -194,7 +213,7 @@ export class LLMProvider implements Provider {
       body.stream = true;
     }
 
-    const baseUrl = this.config.baseUrl ?? 'https://api.openai.com/v1';
+    const baseUrl = normalizeBaseUrl(this.config.baseUrl ?? 'https://api.openai.com/v1');
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {

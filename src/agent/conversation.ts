@@ -11,7 +11,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-import type { MessageImage } from '../llm/provider.js';
+import type { MessageImage, ToolCallRequest } from '../llm/provider.js';
 
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
@@ -20,6 +20,8 @@ export interface Message {
   content: string;
   toolCallId?: string;
   toolName?: string;
+  /** Tool calls made by the assistant (only on role='assistant' messages) */
+  toolCalls?: ToolCallRequest[];
   images?: MessageImage[];
 }
 

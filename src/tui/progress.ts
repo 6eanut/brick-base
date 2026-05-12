@@ -37,6 +37,7 @@ interface ToolCallInfo {
 }
 
 export class ProgressRenderer {
+  private isTty: boolean;
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
   private spinnerFrame = 0;
   private spinnerTurn = 0;
@@ -55,6 +56,10 @@ export class ProgressRenderer {
   // Turn timing
   private turnStartTime = 0;
 
+  constructor() {
+    this.isTty = !!process.stdout.isTTY;
+  }
+
   // ─── Spinner ──────────────────────────────────────────────────────────────
 
   /**
@@ -65,6 +70,11 @@ export class ProgressRenderer {
     this.clearStreaming();
     this.clearToolGroup();
     this.clearSpinner();
+
+    if (!this.isTty) {
+      this.turnStartTime = Date.now();
+      return;
+    }
 
     this.spinnerTurn = data.turn;
     this.spinnerFrame = 0;
@@ -86,7 +96,9 @@ export class ProgressRenderer {
       clearInterval(this.spinnerTimer);
       this.spinnerTimer = null;
     }
-    process.stdout.write('\r\x1b[K');
+    if (this.isTty) {
+      process.stdout.write('\r\x1b[K');
+    }
   }
 
   // ─── Streaming ────────────────────────────────────────────────────────────
@@ -101,6 +113,11 @@ export class ProgressRenderer {
   showToken(data: AgentEventPayloads['llm_token']): void {
     // Thinking tokens — accumulate silently (no visual output)
     if (data.type === 'thinking') return;
+
+    if (!this.isTty) {
+      // Non-TTY: accumulate silently — final response will be printed by pagerThrough
+      return;
+    }
 
     if (!this.isStreaming) {
       this.clearSpinner();
@@ -244,6 +261,11 @@ export class ProgressRenderer {
   showLLMResponse(data: AgentEventPayloads['llm_response']): void {
     this.clearSpinner();
 
+    if (!this.isTty) {
+      // Non-TTY: content will be printed by pagerThrough — no duplicate output
+      return;
+    }
+
     const toolCount = data.toolCount ?? 0;
 
     if (toolCount > 0) {
@@ -278,6 +300,11 @@ export class ProgressRenderer {
   showToolCall(data: AgentEventPayloads['tool_call']): void {
     this.clearSpinner();
 
+    if (!this.isTty) {
+      // Non-TTY: silent — output is for the pager/final response only
+      return;
+    }
+
     // Ensure streaming zone is finalized
     if (this.isStreaming) {
       // Print a newline to separate streaming from tools
@@ -300,6 +327,11 @@ export class ProgressRenderer {
    */
   showToolResult(data: AgentEventPayloads['tool_result']): void {
     this.clearSpinner();
+
+    if (!this.isTty) {
+      // Non-TTY: silent — output is for the pager/final response only
+      return;
+    }
 
     // Find the matching tool call by name (sequential matching for duplicates)
     const idx = this.toolCalls.findIndex(
@@ -407,9 +439,14 @@ export class ProgressRenderer {
    * Show end-of-turn summary.
    * Called on 'turn_end' event.
    */
-  showTurnEnd(data: AgentEventPayloads['turn_end']): void {
-    const turn = data.turn;
-    const calls = data.toolCalls;
+  showTurnEnd(_data: AgentEventPayloads['turn_end']): void {
+    if (!this.isTty) {
+      // Non-TTY: silent
+      return;
+    }
+
+    const turn = _data.turn;
+    const calls = _data.toolCalls;
     const elapsed = Date.now() - this.turnStartTime;
 
     console.log(`  ${theme.muted(`⏳ Turn ${turn}/${MAX_AGENT_TURNS} · ${calls} tool call(s) · ${formatDuration(elapsed)}`)}`);
@@ -440,7 +477,12 @@ export class ProgressRenderer {
    */
   showError(data: AgentEventPayloads['error']): void {
     this.clearSpinner();
-    console.log(`  ${theme.error('❌ Error')} ${theme.error(data.message)}`);
+    const msg = `  ${theme.error('❌ Error')} ${theme.error(data.message)}`;
+    if (this.isTty) {
+      console.log(msg);
+    } else {
+      console.error(msg);
+    }
   }
 
   /**

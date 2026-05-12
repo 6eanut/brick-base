@@ -12,8 +12,19 @@ describe('ProgressRenderer', () => {
   let consoleCalls: string[];
 
   beforeEach(() => {
+    // Set isTTY so the visual rendering paths are tested
+    const originalIsTTY = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: true });
     progress = new ProgressRenderer();
     stdoutCalls = [];
+    // Helper to restore isTTY after each test
+    (progress as any)._restoreTty = () => {
+      if (originalIsTTY) {
+        Object.defineProperty(process.stdout, 'isTTY', originalIsTTY);
+      } else {
+        delete (process.stdout as any).isTTY;
+      }
+    };
     vi.spyOn(process.stdout, 'write').mockImplementation((str) => {
       stdoutCalls.push(String(str));
       return true;
@@ -26,6 +37,7 @@ describe('ProgressRenderer', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    (progress as any)._restoreTty?.();
     progress.finish();
   });
 

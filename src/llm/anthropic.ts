@@ -201,7 +201,7 @@ export class AnthropicProvider implements Provider {
     }
 
     // Make API request
-    const baseUrl = this.config.baseUrl ?? 'https://api.anthropic.com';
+    const baseUrl = this.config.baseUrl?.replace(/\/+$/, '') ?? 'https://api.anthropic.com';
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
@@ -287,55 +287,96 @@ export class AnthropicProvider implements Provider {
       }
 
       if (msg.role === 'assistant') {
-        // Look ahead for consecutive tool messages
-        const toolMessages: LLMMessage[] = [];
-        let j = i + 1;
-        while (j < nonSystemMessages.length && nonSystemMessages[j].role === 'tool') {
-          toolMessages.push(nonSystemMessages[j]);
-          j++;
-        }
-
-        if (toolMessages.length > 0) {
+        if (msg.toolCalls && msg.toolCalls.length > 0) {
           // Build assistant content blocks: text + tool_use blocks
+          // Uses `msg.toolCalls` stored directly on the assistant message
+          // (no look-ahead needed since the loop now writes tool_calls metadata
+          // on the assistant message before tool results)
           const blocks: AnthropicContentBlock[] = [];
           if (msg.content) {
             blocks.push({ type: 'text', text: msg.content });
           }
-          for (const tm of toolMessages) {
+          for (const tc of msg.toolCalls) {
+            let input: Record<string, unknown> = {};
+            try {
+              input = JSON.parse(tc.function.arguments);
+            } catch {
+              // Invalid JSON — empty input
+            }
             blocks.push({
               type: 'tool_use',
-              id: tm.toolCallId ?? crypto.randomUUID(),
-              name: tm.toolName ?? 'unknown',
-              input: {},
+              id: tc.id,
+              name: tc.function.name,
+              input,
             });
           }
           anthropicMessages.push({ role: 'assistant', content: blocks });
-
-          // Tool results become user messages with tool_result content blocks
-          for (const tm of toolMessages) {
-            anthropicMessages.push({
-              role: 'user',
-              content: [
-                {
-                  type: 'tool_result',
-                  tool_use_id: tm.toolCallId ?? '',
-                  content: tm.content,
-                },
-              ],
-            });
+          i++;
+        } else {
+          // Look ahead for legacy tool messages (backward compat)
+          const toolMessages: LLMMessage[] = [];
+          let j = i + 1;
+          while (j < nonSystemMessages.length && nonSystemMessages[j].role === 'tool') {
+            toolMessages.push(nonSystemMessages[j]);
+            j++;
           }
 
-          i = j; // Skip processed tool messages
-        } else {
-          // Plain text assistant message
-          anthropicMessages.push({ role: 'assistant', content: msg.content });
-          i++;
+          if (toolMessages.length > 0) {
+            const blocks: AnthropicContentBlock[] = [];
+            if (msg.content) {
+              blocks.push({ type: 'text', text: msg.content });
+            }
+            for (const tm of toolMessages) {
+              blocks.push({
+                type: 'tool_use',
+                id: tm.toolCallId ?? crypto.randomUUID(),
+                name: tm.toolName ?? 'unknown',
+                input: {},
+              });
+            }
+            anthropicMessages.push({ role: 'assistant', content: blocks });
+
+            // Tool results become user messages with tool_result content blocks
+            for (const tm of toolMessages) {
+              anthropicMessages.push({
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: tm.toolCallId ?? '',
+                    content: tm.content,
+                  },
+                ],
+              });
+            }
+
+            i = j; // Skip processed tool messages
+          } else {
+            // Plain text assistant message
+            anthropicMessages.push({ role: 'assistant', content: msg.content });
+            i++;
+          }
         }
 
         continue;
       }
 
-      // Skip any remaining tool messages (should not reach here)
+      // Tool messages from legacy format
+      if (msg.role === 'tool') {
+        anthropicMessages.push({
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: msg.toolCallId ?? '',
+              content: msg.content,
+            },
+          ],
+        });
+        i++;
+        continue;
+      }
+
       i++;
     }
 

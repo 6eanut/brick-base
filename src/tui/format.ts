@@ -8,6 +8,17 @@
 import boxen from 'boxen';
 import { theme } from './theme.js';
 
+// ─── Helpers ────────────────────────────────────────────────────────────
+
+/**
+ * Terminal-aware padding width for command name columns.
+ * On narrow terminals (<60 cols), reduces padding to fit content.
+ */
+function commandPadding(): number {
+  const width = process.stdout.columns ?? 80;
+  return width < 60 ? 25 : 35;
+}
+
 // ─── Shared boxen options ──────────────────────────────────────────────────
 
 const INFO_BOX = { borderColor: '#58a6ff', borderStyle: 'round', padding: 1, margin: { top: 0, bottom: 1 }, float: 'left' } as const;
@@ -34,8 +45,9 @@ export function formatInfo(title: string | undefined, content: string): string {
  * `commands` — array of { name, description } objects.
  */
 export function formatHelp(commands: Array<{ name: string; description: string }>): string {
+  const pad = commandPadding();
   const lines = commands.map(c => {
-    const padded = c.name.padEnd(35);
+    const padded = c.name.padEnd(pad);
     return `  ${theme.highlight(padded)}${theme.muted(c.description)}`;
   });
   return boxen(lines.join('\n'), {
@@ -51,8 +63,9 @@ export function formatHelp(commands: Array<{ name: string; description: string }
  * When `source` is provided (e.g. "extension:lsp"), a dim source tag is shown.
  */
 export function formatTools(tools: Array<{ name: string; description: string; source?: string }>): string {
+  const pad = commandPadding();
   const lines = tools.map(t => {
-    const padded = t.name.padEnd(35);
+    const padded = t.name.padEnd(pad);
     const srcTag = t.source ? theme.dim(` [${t.source}]`) : '';
     return `  ${theme.highlight(padded)}${theme.muted(t.description)}${srcTag}`;
   });

@@ -7,7 +7,7 @@ We take the security of Brick seriously. If you believe you have found a securit
 **Please do not report security vulnerabilities through public GitHub issues.**
 
 Instead, please use **GitHub's private vulnerability reporting** feature at:
-https://github.com/brick-codeagent/base/security/advisories
+https://github.com/brick-codeagent/brick-base/security/advisories
 
 If you cannot use the private reporting feature, please reach out via the organization's GitHub Discussions or open a draft security advisory.
 

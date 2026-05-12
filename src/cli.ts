@@ -35,7 +35,8 @@ import { McpBridge } from './extensions/mcp-bridge.js';
 import { ToolAnalytics } from './tools/analytics.js';
 import { ProgressRenderer } from './tui/progress.js';
 import { printBanner, printWarningBanner, type BannerConfig } from './tui/banner.js';
-import { formatHelp, formatTools, formatExtensions, formatStats, formatError, formatSuccess, formatWarning } from './tui/format.js';
+import { theme } from './tui/theme.js';
+import { formatHelp, formatTools, formatExtensions, formatStats, formatError, formatSuccess, formatWarning, formatInfo } from './tui/format.js';
 import { updateStatusBar, type StatusBarState } from './tui/status-bar.js';
 import { pagerThrough } from './tui/pager.js';
 
@@ -65,7 +66,7 @@ const program = new Command();
 program
   .name('brick')
   .description('Brick — a modular AI coding agent')
-  .version(BRICK_VERSION)
+  .version(`Brick v${BRICK_VERSION}`)
   .option('-m, --model <name>', 'LLM model to use')
   .option('-p, --provider <name>', 'LLM provider to use')
   .option('--plan', 'Start in plan mode')
@@ -764,8 +765,10 @@ async function main(): Promise<void> {
 
   if (opts.extensions !== false) {
     const discovered = await extensionRegistry.discover();
+
     if (discovered.length > 0) {
-      console.log(chalk.cyan(`\n🔌 Loading ${discovered.length} extension(s)...`));
+      const extResults: string[] = [];
+      let loadedCount = 0;
 
       for (const ext of extensionRegistry.listEnabled()) {
         try {
@@ -774,16 +777,33 @@ async function main(): Promise<void> {
           for (const tool of extTools) {
             toolRegistry.register(tool, `extension:${ext.manifest.name}`);
           }
-          // Check compatibility for display
           const compatResult = checkExtensionCompatibility(ext.manifest.brickVersion, ext.manifest.name);
-          const statusIcon = compatResult.compatible ? chalk.green('✅') : chalk.yellow('⚠️');
-          const compatSuffix = compatResult.compatible ? '' : chalk.yellow(' (incompatible Brick version)');
-          console.log(`${statusIcon} ${ext.manifest.name} v${ext.manifest.version}${compatSuffix}`);
+          const compatSuffix = compatResult.compatible ? '' : theme.warning(' (incompatible Brick version)');
+          extResults.push(`  ${theme.success('✓')} ${ext.manifest.name} v${ext.manifest.version}${compatSuffix}`);
+          loadedCount++;
         } catch (err) {
-          console.log(chalk.red(`  ❌ ${ext.manifest.name}: ${err}`));
+          extResults.push(`  ${theme.error('✖')} ${ext.manifest.name}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      console.log();
+
+      if (process.stdout.isTTY) {
+        console.log(formatInfo(
+          `Extensions (${loadedCount}/${discovered.length})`,
+          extResults.join('\n'),
+        ));
+      } else {
+        // Non-TTY: silent load, no ANSI visual output
+        for (const ext of extensionRegistry.listEnabled()) {
+          try {
+            const cfgEnv = configManager.getConfigAsEnv(ext.manifest.name);
+            for (const tool of await mcpBridge.connect(ext, cfgEnv)) {
+              toolRegistry.register(tool, `extension:${ext.manifest.name}`);
+            }
+          } catch {
+            // Silently skip failures in non-TTY mode
+          }
+        }
+      }
     }
   }
 
@@ -865,12 +885,14 @@ async function main(): Promise<void> {
     enableExtension: (name: string) => {
       const ext = extensionRegistry.get(name);
       if (!ext) return `Extension "${name}" is not installed.`;
+      if (ext.enabled) return `Extension "${name}" is already enabled.`;
       extensionRegistry.setEnabled(name, true);
       return formatSuccess(`Extension "${name}" enabled.`);
     },
     disableExtension: (name: string) => {
       const ext = extensionRegistry.get(name);
       if (!ext) return `Extension "${name}" is not installed.`;
+      if (!ext.enabled) return `Extension "${name}" is already disabled.`;
       extensionRegistry.setEnabled(name, false);
       return formatSuccess(`Extension "${name}" disabled. Use "brick enable ${name}" to re-enable.`);
     },
@@ -1009,12 +1031,14 @@ async function main(): Promise<void> {
       enableExtension: (name: string) => {
         const ext = extensionRegistry.get(name);
         if (!ext) return `Extension "${name}" is not installed.`;
+        if (ext.enabled) return `Extension "${name}" is already enabled.`;
         extensionRegistry.setEnabled(name, true);
         return `Extension "${name}" enabled.`;
       },
       disableExtension: (name: string) => {
         const ext = extensionRegistry.get(name);
         if (!ext) return `Extension "${name}" is not installed.`;
+        if (!ext.enabled) return `Extension "${name}" is already disabled.`;
         extensionRegistry.setEnabled(name, false);
         return `Extension "${name}" disabled.`;
       },
@@ -1046,6 +1070,41 @@ async function main(): Promise<void> {
     });
 
     if (cmdResult !== null) {
+      // Auto-wrap plain-text responses into boxen format for consistency.
+      // Results already containing boxen borders (╭) pass through as-is.
+      if (cmdResult === '') {
+        // Empty — skip
+      } else if (cmdResult === 'Goodbye!') {
+        console.log(`  ${theme.dim('Goodbye!')}`);
+      } else if (!cmdResult.includes('╭')) {
+        // Plain text — detect type from content
+        if (cmdResult.startsWith('Unknown command:') || cmdResult.startsWith('Usage:')) {
+          console.log(formatWarning(cmdResult));
+        } else if (cmdResult.startsWith('Extension ') && (cmdResult.includes('not installed') || cmdResult.includes('not found'))) {
+          console.log(formatWarning(cmdResult));
+        } else if (cmdResult.startsWith('File not found') || cmdResult.startsWith('Unsupported')) {
+          console.log(formatWarning(cmdResult));
+        } else if (cmdResult.includes('already enabled') || cmdResult.includes('already disabled')) {
+          console.log(formatInfo(undefined, cmdResult));
+        } else if (cmdResult.includes('configurable') || cmdResult.includes('config key')) {
+          console.log(formatInfo(undefined, cmdResult));
+        } else if (cmdResult === 'Conversation cleared.') {
+          console.log(formatSuccess(cmdResult));
+        } else if (cmdResult.startsWith('Switched to')) {
+          console.log(formatSuccess(cmdResult));
+        } else if (cmdResult.startsWith('Model set to')) {
+          console.log(formatSuccess(cmdResult));
+        } else {
+          console.log(formatSuccess(cmdResult));
+        }
+      } else {
+        // Already boxen-formatted
+        console.log(cmdResult);
+      }
+
+      // Skip prompt+update if exiting
+      if (shouldExit) continue;
+
       // Update status bar after commands that may change mode/model
       updateStatusBar({
         mode: currentMode,
@@ -1053,6 +1112,7 @@ async function main(): Promise<void> {
         provider: providerName,
         toolCount: toolRegistry.listAll().length,
       });
+      console.log(); // Blank line before next prompt
       rl.prompt();
       continue;
     }
@@ -1078,14 +1138,24 @@ async function main(): Promise<void> {
         totalTokens: result.totalTokens,
       });
 
-      // Use pager for long responses
-      await pagerThrough(result.response);
+      // Use pager for long responses (non-TTY only — TTY already streamed content)
+      if (!process.stdout.isTTY) {
+        await pagerThrough(result.response);
+      }
     } catch (err) {
       progress.finish();
       const msg = err instanceof Error ? err.message : String(err);
-      console.log(formatError(msg));
+      // Enrich terse error messages with provider context
+      const modelName = opts.model ?? providerCfg.defaultModel ?? 'auto';
+      const enriched = msg === 'fetch failed'
+        ? `Failed to connect to LLM provider "${providerName}" (model: ${modelName}) — check your network, base URL, and API key`
+        : msg.includes('LLM API error')
+          ? `${msg} (provider: ${providerName}, model: ${modelName})`
+          : msg;
+      console.log(formatError(enriched));
     }
 
+    if (shouldExit) break;
     rl.prompt();
   }
 

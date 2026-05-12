@@ -368,7 +368,23 @@ export class AgentLoop {
           }
         }
 
-        // ── Step 4: Emit results + add tool messages (ordered) ───────
+        // ── Step 4: Add assistant message with tool calls BEFORE results ──
+        // OpenAI/DeepSeek require assistant messages with tool_calls to
+        // precede tool result messages. The API validates this ordering.
+        this.conversation.getActive().messages.push({
+          role: 'assistant',
+          content: response.content ?? '',
+          toolCalls: response.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.function.name,
+              arguments: tc.function.arguments,
+            },
+          })),
+        });
+
+        // ── Step 5: Emit results + add tool messages (ordered) ─────────
         for (let i = 0; i < pendingTools.length; i++) {
           const pt = pendingTools[i];
           const res = results[i];
@@ -398,11 +414,6 @@ export class AgentLoop {
               this.formatToolResult(res.result),
             );
           }
-        }
-
-        // Add assistant's tool call message to conversation
-        if (response.content) {
-          this.conversation.addAssistantMessage(response.content);
         }
 
         // Persist all conversation changes from this turn
@@ -494,6 +505,7 @@ export class AgentLoop {
       content: m.content,
       toolCallId: m.toolCallId,
       toolName: m.toolName,
+      toolCalls: m.toolCalls,
       images: m.images,
     }));
   }
